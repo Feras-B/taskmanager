@@ -1,0 +1,33 @@
+export interface Task {
+  id: string;
+  title: string;
+  category: "work" | "personal" | "health" | "social" | "other";
+  priority: "low" | "medium" | "high";
+  time?: string;
+  date: string;
+  completed: boolean;
+  createdAt: string;
+  archivedAt?: string;
+}
+
+export interface TrashedTask extends Task {
+  trashedAt: string;
+}
+
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+  tasks?: Task[];
+}
+
+export interface ScheduledEvent {
+  id: string;
+  title: string;
+  date: string;
+  time: string | null;
+  reminderMinutes: number | null;
+  reminderNotifiedAt: string | null;
+  originalMessage: string;
+  createdAt: string;
+  status: "upcoming" | "completed";
+}

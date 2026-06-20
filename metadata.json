@@ -1,0 +1,8 @@
+{
+  "name": "منظم المهامي الذكي",
+  "description": "تطبيق ذكي لإدارة المهام عبر الدردشة، يساعدك على ترتيب يومك وتقليل التشتت بصمت وذكاء.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
