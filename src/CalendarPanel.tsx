@@ -59,9 +59,9 @@ export default function CalendarPanel({
   );
 
   return (
-    <section className="mb-8 border-y border-zinc-200 py-5 dark:border-zinc-800">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center rounded-lg bg-zinc-100 p-1 dark:bg-zinc-900">
+    <section className="mb-6 max-w-full border-y border-zinc-200 py-4 dark:border-zinc-800 sm:mb-8 sm:py-5">
+      <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+        <div className="grid grid-cols-3 items-center rounded-lg bg-zinc-100 p-1 dark:bg-zinc-900">
           {(["today", "week", "month"] as CalendarViewMode[]).map(option => (
             <button
               key={option}
@@ -69,7 +69,7 @@ export default function CalendarPanel({
                 onViewChange(option);
                 if (option === "today") onSelectDate(today);
               }}
-              className={`px-3 py-2 text-xs font-semibold transition-colors ${
+              className={`min-h-11 px-3 py-2 text-xs font-semibold transition-colors ${
                 view === option
                   ? "rounded-md bg-white text-zinc-900 shadow-sm dark:bg-zinc-800 dark:text-white"
                   : "text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white"
@@ -79,15 +79,15 @@ export default function CalendarPanel({
             </button>
           ))}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center justify-between gap-1">
           <button
             onClick={() => move(-1)}
-            className="p-2 text-zinc-500 hover:text-primary dark:text-zinc-400"
+            className="flex h-11 w-11 shrink-0 items-center justify-center text-zinc-500 hover:text-primary dark:text-zinc-400"
             aria-label={language === "ar" ? "السابق" : "Previous"}
           >
             {language === "ar" ? <ChevronRight size={19} /> : <ChevronLeft size={19} />}
           </button>
-          <div className="min-w-36 text-center text-sm font-bold text-zinc-800 dark:text-zinc-100">
+          <div className="min-w-0 flex-1 text-center text-sm font-bold text-zinc-800 dark:text-zinc-100 sm:min-w-36">
             {new Intl.DateTimeFormat(locale, {
               month: "long",
               year: "numeric",
@@ -96,7 +96,7 @@ export default function CalendarPanel({
           </div>
           <button
             onClick={() => move(1)}
-            className="p-2 text-zinc-500 hover:text-primary dark:text-zinc-400"
+            className="flex h-11 w-11 shrink-0 items-center justify-center text-zinc-500 hover:text-primary dark:text-zinc-400"
             aria-label={language === "ar" ? "التالي" : "Next"}
           >
             {language === "ar" ? <ChevronLeft size={19} /> : <ChevronRight size={19} />}
@@ -117,7 +117,8 @@ export default function CalendarPanel({
           </span>
         </button>
       ) : (
-        <div className={`mt-5 grid grid-cols-7 ${view === "month" ? "gap-px bg-zinc-200 dark:bg-zinc-800" : "gap-2"}`}>
+        <div className="mt-4 max-w-full overflow-x-auto pb-1 custom-scrollbar sm:mt-5">
+        <div className={`grid grid-cols-7 ${view === "month" ? "min-w-[350px] gap-px bg-zinc-200 dark:bg-zinc-800" : "min-w-[420px] gap-2 sm:min-w-0"}`}>
           {view === "month" && weekdays.map(day => (
             <div key={day} className="bg-zinc-50 py-2 text-center text-[11px] font-semibold text-zinc-400 dark:bg-zinc-950">
               {day}
@@ -149,6 +150,7 @@ export default function CalendarPanel({
               </button>
             );
           })}
+        </div>
         </div>
       )}
     </section>

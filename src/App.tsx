@@ -33,7 +33,8 @@ import {
   Plus,
   History,
   ShieldCheck,
-  Pencil
+  Pencil,
+  Settings
 } from 'lucide-react';
 import { Task, ChatMessage, ChatConversation, ScheduledEvent, TrashedTask } from './types';
 import { parseScheduledEvent, scheduledEventTimestamp } from './dateParser';
@@ -43,6 +44,7 @@ import { applyNewDayAction, NewDayAction } from './newDayUtils';
 
 type Language = 'ar' | 'en';
 type AppSection = 'dashboard' | 'trash';
+type MobileView = 'chat' | 'tasks' | 'calendar' | 'more';
 
 function createChat(language: Language, isTemporary: boolean): ChatConversation {
   const now = new Date().toISOString();
@@ -241,6 +243,11 @@ const translations = {
     voiceFallback: 'لم يعمل الميكروفون، يمكنك كتابة المهمة أو إضافتها يدويًا.',
     addFromText: 'إضافة من النص',
     taskSaved: 'تم حفظ المهمة على جهازك.',
+    mobileChat: 'المحادثة',
+    mobileTasks: 'المهام',
+    mobileCalendar: 'التقويم',
+    mobileAdd: 'إضافة',
+    mobileMore: 'الإعدادات',
     categories: {
       work: 'عمل',
       personal: 'شخصي',
@@ -352,6 +359,11 @@ const translations = {
     voiceFallback: 'Microphone did not work. You can type or add the task manually.',
     addFromText: 'Add from text',
     taskSaved: 'Task saved on this device.',
+    mobileChat: 'Chat',
+    mobileTasks: 'Tasks',
+    mobileCalendar: 'Calendar',
+    mobileAdd: 'Add',
+    mobileMore: 'Settings',
     categories: {
       work: 'Work',
       personal: 'Personal',
@@ -479,6 +491,7 @@ export default function App() {
   const [chatFallbackText, setChatFallbackText] = useState('');
   const [taskSavedToast, setTaskSavedToast] = useState('');
   const [activeSection, setActiveSection] = useState<AppSection>('dashboard');
+  const [mobileView, setMobileView] = useState<MobileView>('tasks');
   const [calendarView, setCalendarView] = useState<CalendarViewMode>('week');
   const [selectedDate, setSelectedDate] = useState(todayKey);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -669,6 +682,26 @@ export default function App() {
     return () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    const updateAppHeight = () => {
+      const height = viewport?.height || window.innerHeight;
+      document.documentElement.style.setProperty('--app-height', `${height}px`);
+    };
+
+    updateAppHeight();
+    viewport?.addEventListener('resize', updateAppHeight);
+    viewport?.addEventListener('scroll', updateAppHeight);
+    window.addEventListener('resize', updateAppHeight);
+
+    return () => {
+      viewport?.removeEventListener('resize', updateAppHeight);
+      viewport?.removeEventListener('scroll', updateAppHeight);
+      window.removeEventListener('resize', updateAppHeight);
+      document.documentElement.style.removeProperty('--app-height');
     };
   }, []);
 
@@ -1307,7 +1340,10 @@ export default function App() {
   ];
 
   return (
-    <div className="flex h-screen bg-zinc-50 font-sans overflow-hidden text-zinc-900 transition-colors duration-300 dark:bg-zinc-950 dark:text-zinc-50">
+    <div
+      className="flex max-w-full overflow-hidden bg-zinc-50 font-sans text-zinc-900 transition-colors duration-300 dark:bg-zinc-950 dark:text-zinc-50"
+      style={{ height: 'var(--app-height, 100dvh)' }}
+    >
       {/* Sidebar - Desktop Only */}
       <aside className={`hidden lg:flex w-24 flex-col items-center py-8 bg-white border-zinc-200 transition-colors dark:bg-zinc-900 dark:border-zinc-800 ${language === 'ar' ? 'border-l' : 'border-r'}`}>
         <div className="w-12 h-12 bg-zinc-900 rounded-2xl flex items-center justify-center text-white mb-10 shadow-lg dark:bg-white dark:text-zinc-950">
@@ -1351,52 +1387,44 @@ export default function App() {
       </aside>
 
       {/* Main Content */}
-      <main className="flex-1 flex flex-col md:flex-row overflow-hidden relative">
+      <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden md:flex-row">
         
         {/* Mobile Header */}
-        <div className="lg:hidden p-4 bg-white border-b border-zinc-100 flex items-center justify-between transition-colors dark:bg-zinc-900 dark:border-zinc-800">
+        <div className="flex min-h-14 shrink-0 items-center justify-between border-b border-zinc-100 bg-white px-4 py-2 transition-colors dark:border-zinc-800 dark:bg-zinc-900 md:hidden">
            <div className="flex items-center gap-2">
             <Sparkles className="text-zinc-800 dark:text-zinc-100" size={20} />
             <span className="font-bold">{t.appName}</span>
            </div>
            <div className="flex items-center gap-1">
-            <button onClick={toggleLanguage} className="text-zinc-400 p-2 dark:text-zinc-300" title={t.changeLanguage}>
+            <button onClick={toggleLanguage} className="flex h-11 w-11 items-center justify-center text-zinc-400 dark:text-zinc-300" title={t.changeLanguage}>
               <Languages size={20} />
             </button>
-            <button onClick={toggleTheme} className="text-zinc-400 p-2 dark:text-zinc-300" title={isDarkMode ? t.lightMode : t.darkMode}>
+            <button onClick={toggleTheme} className="flex h-11 w-11 items-center justify-center text-zinc-400 dark:text-zinc-300" title={isDarkMode ? t.lightMode : t.darkMode}>
               {isDarkMode ? <Sun size={20} /> : <Moon size={20} />}
-            </button>
-            <button onClick={() => setActiveSection(activeSection === 'trash' ? 'dashboard' : 'trash')} className="relative text-zinc-400 p-2 dark:text-zinc-300" title={t.trash}>
-              <Trash2 size={20} />
-              {trashedTasks.length > 0 && (
-                <span className="absolute end-0 top-0 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[9px] text-white">
-                  {trashedTasks.length}
-                </span>
-              )}
             </button>
            </div>
         </div>
 
         {/* Tasks Section */}
-        <section className="flex-1 overflow-y-auto custom-scrollbar p-6 lg:p-12">
+        <section className={`${mobileView === 'chat' ? 'hidden md:block' : 'block'} min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden px-4 pb-28 pt-5 custom-scrollbar sm:px-6 md:p-6 lg:p-12`}>
           {activeSection === 'dashboard' ? (
             <>
-              <header className="mb-6 flex flex-wrap items-start justify-between gap-4">
+              <header className="mb-5 flex flex-wrap items-start justify-between gap-3 sm:mb-6 sm:gap-4">
                 <div>
-                  <h1 className="text-4xl font-bold text-zinc-900 mb-2 tracking-tight dark:text-zinc-50">{t.taskList}</h1>
-                  <p className="text-zinc-500 text-lg dark:text-zinc-400">{t.todaySummary(todayTaskCount, todayEventCount)}</p>
+                  <h1 className="mb-1 text-2xl font-bold text-zinc-900 dark:text-zinc-50 sm:text-3xl lg:mb-2 lg:text-4xl">{t.taskList}</h1>
+                  <p className="text-sm text-zinc-500 dark:text-zinc-400 sm:text-base lg:text-lg">{t.todaySummary(todayTaskCount, todayEventCount)}</p>
                 </div>
-                <div className="flex flex-wrap items-center gap-2">
+                <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
                   <button
                     onClick={() => openManualTaskForm()}
-                    className="flex items-center gap-2 rounded-lg bg-primary px-4 py-3 text-sm font-bold text-white transition-colors hover:bg-primary/90"
+                    className="hidden min-h-11 items-center gap-2 rounded-lg bg-primary px-4 py-3 text-sm font-bold text-white transition-colors hover:bg-primary/90 md:flex"
                   >
                     <Plus size={18} />
                     {t.addTask}
                   </button>
                   <button
                     onClick={openNewDayModal}
-                    className="flex items-center gap-2 rounded-lg bg-zinc-900 px-4 py-3 text-sm font-bold text-white transition-colors hover:bg-zinc-700 dark:bg-white dark:text-zinc-950 dark:hover:bg-zinc-200"
+                    className="flex min-h-11 items-center gap-2 rounded-lg bg-zinc-900 px-4 py-3 text-sm font-bold text-white transition-colors hover:bg-zinc-700 dark:bg-white dark:text-zinc-950 dark:hover:bg-zinc-200"
                   >
                     <CalendarPlus size={18} />
                     {t.newDay}
@@ -1410,17 +1438,19 @@ export default function App() {
                 </div>
               )}
 
-              <CalendarPanel
-                language={language}
-                selectedDate={selectedDate}
-                view={calendarView}
-                tasks={tasks}
-                events={scheduledEvents}
-                onSelectDate={setSelectedDate}
-                onViewChange={setCalendarView}
-              />
+              <div className={mobileView === 'tasks' ? 'hidden md:block' : 'block'}>
+                <CalendarPanel
+                  language={language}
+                  selectedDate={selectedDate}
+                  view={calendarView}
+                  tasks={tasks}
+                  events={scheduledEvents}
+                  onSelectDate={setSelectedDate}
+                  onViewChange={setCalendarView}
+                />
+              </div>
 
-              <div className="grid grid-cols-1 gap-6 max-w-3xl">
+              <div className="grid max-w-3xl grid-cols-1 gap-5 sm:gap-6">
             {/* Upcoming Events */}
             <div className="space-y-4 mb-6">
               <h2 className="text-xs font-bold text-zinc-400 uppercase tracking-widest flex items-center gap-2 mb-6 dark:text-zinc-500">
@@ -1439,7 +1469,7 @@ export default function App() {
                       layout
                       initial={{ opacity: 0, y: 8 }}
                       animate={{ opacity: 1, y: 0 }}
-                      className="group flex min-w-0 items-start gap-3 rounded-lg border border-zinc-200 bg-white p-4 shadow-sm transition-colors dark:border-zinc-800 dark:bg-zinc-900"
+                      className="group flex min-w-0 items-start gap-3 rounded-lg border border-zinc-200 bg-white p-3.5 shadow-sm transition-colors dark:border-zinc-800 dark:bg-zinc-900 sm:p-4"
                     >
                       <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
                         <CalendarClock size={20} />
@@ -1479,14 +1509,14 @@ export default function App() {
                       <div className="flex shrink-0 items-center gap-1 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100">
                         <button
                           onClick={() => completeEvent(event.id)}
-                          className="p-1.5 text-zinc-400 transition-colors hover:text-emerald-500"
+                          className="flex h-11 w-11 items-center justify-center text-zinc-400 transition-colors hover:text-emerald-500"
                           title={t.completeEvent}
                         >
                           <CheckCircle2 size={17} />
                         </button>
                         <button
                           onClick={() => deleteEvent(event.id)}
-                          className="p-1.5 text-zinc-400 transition-colors hover:text-red-500"
+                          className="flex h-11 w-11 items-center justify-center text-zinc-400 transition-colors hover:text-red-500"
                           title={t.deleteEvent}
                         >
                           <Trash2 size={17} />
@@ -1513,17 +1543,17 @@ export default function App() {
                     initial={{ opacity: 0, y: 10 }}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, scale: 0.98 }}
-                    className="group bg-white p-5 rounded-3xl border border-zinc-100 shadow-sm hover:shadow-xl hover:border-zinc-200 transition-all flex items-center gap-5 dark:bg-zinc-900 dark:border-zinc-800 dark:hover:border-zinc-700 dark:shadow-black/20"
+                    className="group flex items-start gap-3 rounded-lg border border-zinc-100 bg-white p-3.5 shadow-sm transition-all hover:border-zinc-200 hover:shadow-xl dark:border-zinc-800 dark:bg-zinc-900 dark:shadow-black/20 dark:hover:border-zinc-700 sm:gap-5 sm:rounded-3xl sm:p-5"
                   >
                     <button 
                       onClick={() => toggleTask(task.id)}
-                      className="text-zinc-200 hover:text-primary transition-colors transform hover:scale-110 active:scale-95 dark:text-zinc-700 dark:hover:text-primary"
+                      className="flex h-11 w-11 shrink-0 items-center justify-center text-zinc-200 transition-colors hover:text-primary active:scale-95 dark:text-zinc-700 dark:hover:text-primary"
                     >
                       <Circle size={28} />
                     </button>
-                    <div className="flex-1">
-                      <h3 className="font-semibold text-zinc-800 text-lg leading-tight dark:text-zinc-100">{task.title}</h3>
-                      <div className="flex items-center gap-4 mt-2">
+                    <div className="min-w-0 flex-1">
+                      <h3 className="break-words text-base font-semibold leading-snug text-zinc-800 [overflow-wrap:anywhere] dark:text-zinc-100 sm:text-lg">{task.title}</h3>
+                      <div className="mt-2 flex flex-wrap items-center gap-2 sm:gap-4">
                         <span className="flex items-center gap-1.5 text-xs bg-zinc-100 px-3 py-1.5 rounded-full text-zinc-600 font-medium dark:bg-zinc-800 dark:text-zinc-300">
                           <span className="text-base">{getCategoryIcon(task.category)}</span>
                           {t.categories[task.category]}
@@ -1554,7 +1584,7 @@ export default function App() {
                             value={task.reminderMinutes === null ? '' : String(task.reminderMinutes)}
                             onChange={event => void updateTaskReminder(task, event.target.value)}
                             disabled={taskTimestamp(task) === null}
-                            className="w-full rounded-md border border-zinc-200 bg-zinc-50 px-2.5 py-2 text-xs text-zinc-700 outline-none transition-colors focus:border-primary disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200"
+                            className="min-h-11 w-full rounded-md border border-zinc-200 bg-zinc-50 px-2.5 py-2 text-xs text-zinc-700 outline-none transition-colors focus:border-primary disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200"
                           >
                             {reminderOptions.map(option => (
                               <option key={option.value} value={option.value}>
@@ -1566,7 +1596,7 @@ export default function App() {
                         {taskTimestamp(task) === null && (
                           <button
                             onClick={() => openTaskTimeEditor(task)}
-                            className="shrink-0 rounded-md bg-primary/10 px-3 py-2 text-xs font-bold text-primary transition-colors hover:bg-primary/15"
+                            className="min-h-11 shrink-0 rounded-md bg-primary/10 px-3 py-2 text-xs font-bold text-primary transition-colors hover:bg-primary/15"
                           >
                             {t.addTime}
                           </button>
@@ -1578,17 +1608,17 @@ export default function App() {
                         </p>
                       )}
                     </div>
-                    <div className="flex shrink-0 items-center gap-1 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100">
+                    <div className="flex shrink-0 flex-col items-center gap-1 opacity-100 transition-opacity sm:flex-row sm:opacity-0 sm:group-hover:opacity-100">
                       <button
                         onClick={() => openManualTaskForm('', task)}
-                        className="rounded-xl bg-zinc-50 p-2 text-zinc-300 transition-colors hover:text-primary dark:bg-zinc-800 dark:text-zinc-600"
+                        className="flex h-11 w-11 items-center justify-center rounded-xl bg-zinc-50 text-zinc-400 transition-colors hover:text-primary dark:bg-zinc-800 dark:text-zinc-500"
                         title={t.editTask}
                       >
                         <Pencil size={18} />
                       </button>
                       <button
                         onClick={() => deleteTask(task.id)}
-                        className="rounded-xl bg-zinc-50 p-2 text-zinc-300 transition-colors hover:text-red-500 dark:bg-zinc-800 dark:text-zinc-600 dark:hover:text-red-400"
+                        className="flex h-11 w-11 items-center justify-center rounded-xl bg-zinc-50 text-zinc-400 transition-colors hover:text-red-500 dark:bg-zinc-800 dark:text-zinc-500 dark:hover:text-red-400"
                       >
                         <Trash2 size={20} />
                       </button>
@@ -1607,7 +1637,7 @@ export default function App() {
                 {completedList.map((task) => (
                   <div
                     key={task.id}
-                    className="bg-white/40 p-5 rounded-3xl border border-transparent opacity-50 flex items-center gap-5 grayscale hover:grayscale-0 transition-all dark:bg-zinc-900/40"
+                    className="flex items-center gap-3 rounded-lg border border-transparent bg-white/40 p-3.5 opacity-50 grayscale transition-all hover:grayscale-0 dark:bg-zinc-900/40 sm:gap-5 sm:rounded-3xl sm:p-5"
                   >
                     <button 
                       onClick={() => toggleTask(task.id)}
@@ -1636,8 +1666,18 @@ export default function App() {
             </>
           ) : (
             <div className="max-w-3xl">
-              <header className="mb-8">
-                <h1 className="text-4xl font-bold text-zinc-900 mb-2 tracking-tight dark:text-zinc-50">{t.trash}</h1>
+              <header className="mb-6">
+                <div className="mb-4 flex gap-2 md:hidden">
+                  <button onClick={toggleTheme} className="flex min-h-11 flex-1 items-center justify-center gap-2 rounded-lg bg-white px-3 text-sm font-semibold shadow-sm dark:bg-zinc-900">
+                    {isDarkMode ? <Sun size={18} /> : <Moon size={18} />}
+                    {isDarkMode ? t.lightMode : t.darkMode}
+                  </button>
+                  <button onClick={toggleLanguage} className="flex min-h-11 flex-1 items-center justify-center gap-2 rounded-lg bg-white px-3 text-sm font-semibold shadow-sm dark:bg-zinc-900">
+                    <Languages size={18} />
+                    {language === 'ar' ? 'English' : 'العربية'}
+                  </button>
+                </div>
+                <h1 className="mb-2 text-2xl font-bold text-zinc-900 dark:text-zinc-50 sm:text-4xl">{t.trash}</h1>
                 <p className="text-zinc-500 dark:text-zinc-400">{trashedTasks.length}</p>
               </header>
               {trashedTasks.length === 0 ? (
@@ -1683,7 +1723,7 @@ export default function App() {
         </section>
 
         {/* Improved Chat Section */}
-        <section className={`w-full md:w-96 lg:w-[450px] bg-white border-zinc-200 flex flex-col h-[55vh] md:h-full relative overflow-hidden shadow-[-10px_0_30px_rgba(0,0,0,0.02)] transition-colors dark:bg-zinc-900 dark:border-zinc-800 dark:shadow-black/20 ${language === 'ar' ? 'border-r' : 'border-l'}`}>
+        <section className={`${mobileView === 'chat' ? 'flex' : 'hidden md:flex'} relative h-full min-h-0 w-full min-w-0 flex-col overflow-hidden border-zinc-200 bg-white shadow-[-10px_0_30px_rgba(0,0,0,0.02)] transition-colors dark:border-zinc-800 dark:bg-zinc-900 dark:shadow-black/20 md:w-96 lg:w-[450px] ${language === 'ar' ? 'md:border-r' : 'md:border-l'}`}>
           <div className="sticky top-0 z-10 border-b border-zinc-100 bg-white/90 px-4 py-4 backdrop-blur-md dark:border-zinc-800 dark:bg-zinc-900/90 sm:px-6">
             <div className="flex items-center justify-between gap-3">
               <div className="flex min-w-0 items-center gap-3">
@@ -1804,7 +1844,7 @@ export default function App() {
 
           <div 
             ref={scrollRef}
-            className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar bg-slate-50/30 transition-colors dark:bg-zinc-950/35"
+            className="flex-1 space-y-4 overflow-y-auto bg-slate-50/30 p-4 custom-scrollbar transition-colors dark:bg-zinc-950/35 sm:space-y-6 sm:p-6"
           >
             {messages.map((msg, i) => {
                const isLastMessage = i === messages.length - 1;
@@ -1818,7 +1858,7 @@ export default function App() {
                     className={`flex ${msg.role === 'user' ? 'justify-start' : 'justify-end'}`}
                   >
                     <div className={`
-                      max-w-[88%] whitespace-pre-wrap break-words [overflow-wrap:anywhere] p-4 rounded-3xl text-sm leading-relaxed shadow-sm
+                      max-w-[90%] whitespace-pre-wrap break-words [overflow-wrap:anywhere] p-3.5 sm:p-4 rounded-3xl text-sm leading-relaxed shadow-sm
                       ${msg.role === 'user' 
                         ? 'bg-zinc-900 text-white rounded-tr-none dark:bg-primary' 
                         : 'bg-white text-zinc-800 rounded-tl-none border border-zinc-100 dark:bg-zinc-800 dark:text-zinc-100 dark:border-zinc-700'}
@@ -1863,7 +1903,7 @@ export default function App() {
             })}
           </div>
 
-          <div className="p-4 sm:p-6 bg-white border-t border-zinc-100 transition-colors dark:bg-zinc-900 dark:border-zinc-800">
+          <div className="mb-[calc(4.5rem+env(safe-area-inset-bottom))] shrink-0 border-t border-zinc-100 bg-white p-3 transition-colors dark:border-zinc-800 dark:bg-zinc-900 sm:p-4 md:mb-0 md:p-6">
             {chatFallbackText && (
               <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-500/20 dark:bg-amber-500/10">
                 <p className="text-xs font-medium text-amber-800 dark:text-amber-200">{t.chatFallback}</p>
@@ -1883,11 +1923,11 @@ export default function App() {
                 </div>
               </div>
             )}
-            <div className="flex w-full items-end gap-2.5 sm:gap-3">
+            <div className="flex w-full items-end gap-2 sm:gap-3">
               <button
                 onClick={toggleListening}
                 disabled={isLoading}
-                className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-full border transition-all disabled:opacity-40 ${
+                className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full border transition-all disabled:opacity-40 sm:h-12 sm:w-12 ${
                   isListening
                     ? 'border-red-400 bg-red-50 text-red-500 shadow-md shadow-red-500/15 dark:border-red-500/40 dark:bg-red-500/10'
                     : 'border-zinc-200 bg-zinc-50 text-zinc-500 hover:border-primary hover:text-primary dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-400'
@@ -1911,13 +1951,13 @@ export default function App() {
                   }}
                   placeholder={t.placeholder}
                   dir={language === 'ar' ? 'rtl' : 'ltr'}
-                  className={`block max-h-36 min-h-12 w-full resize-none overflow-y-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere] rounded-[24px] border border-zinc-200 bg-zinc-50 px-5 py-3 focus:border-primary focus:outline-none focus:ring-4 focus:ring-primary/5 transition-all text-sm leading-6 group-hover:bg-white dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:group-hover:bg-zinc-950 ${language === 'ar' ? 'text-right' : 'text-left'}`}
+                  className={`block max-h-32 min-h-11 w-full resize-none overflow-y-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere] rounded-[22px] border border-zinc-200 bg-zinc-50 px-4 py-2.5 text-base leading-6 transition-all focus:border-primary focus:outline-none focus:ring-4 focus:ring-primary/5 group-hover:bg-white dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:group-hover:bg-zinc-950 sm:max-h-36 sm:min-h-12 sm:rounded-[24px] sm:px-5 sm:py-3 sm:text-sm ${language === 'ar' ? 'text-right' : 'text-left'}`}
                 />
               </div>
               <button
                 onClick={handleSend}
                 disabled={isLoading || !inputValue.trim() || isListening}
-                className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-primary text-white shadow-md shadow-primary/20 transition-all hover:scale-105 active:scale-95 disabled:opacity-30 disabled:hover:scale-100"
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-primary text-white shadow-md shadow-primary/20 transition-all hover:scale-105 active:scale-95 disabled:opacity-30 disabled:hover:scale-100 sm:h-12 sm:w-12"
                 aria-label={language === 'ar' ? 'إرسال' : 'Send'}
               >
                 <Send size={20} />
@@ -1946,6 +1986,62 @@ export default function App() {
             )}
           </div>
         </section>
+
+        <nav
+          className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-5 border-t border-zinc-200 bg-white/95 px-1 pt-1 backdrop-blur-xl dark:border-zinc-800 dark:bg-zinc-900/95 md:hidden"
+          style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
+          aria-label={language === 'ar' ? 'التنقل الرئيسي' : 'Main navigation'}
+        >
+          {[
+            { id: 'chat' as const, label: t.mobileChat, icon: MessageSquare },
+            { id: 'tasks' as const, label: t.mobileTasks, icon: CheckCircle2 },
+            { id: 'calendar' as const, label: t.mobileCalendar, icon: Calendar },
+          ].map(item => {
+            const Icon = item.icon;
+            const active = mobileView === item.id;
+            return (
+              <button
+                key={item.id}
+                onClick={() => {
+                  setActiveSection('dashboard');
+                  setMobileView(item.id);
+                }}
+                className={`relative flex min-h-16 min-w-0 flex-col items-center justify-center gap-1 px-1 text-[10px] font-semibold transition-colors ${
+                  active ? 'text-primary' : 'text-zinc-400 dark:text-zinc-500'
+                }`}
+              >
+                <Icon size={21} />
+                <span className="max-w-full truncate">{item.label}</span>
+              </button>
+            );
+          })}
+          <button
+            onClick={() => openManualTaskForm()}
+            className="flex min-h-16 min-w-0 flex-col items-center justify-center gap-1 px-1 text-[10px] font-semibold text-primary"
+          >
+            <span className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-white shadow-md shadow-primary/20">
+              <Plus size={19} />
+            </span>
+            <span className="max-w-full truncate">{t.mobileAdd}</span>
+          </button>
+          <button
+            onClick={() => {
+              setActiveSection('trash');
+              setMobileView('more');
+            }}
+            className={`relative flex min-h-16 min-w-0 flex-col items-center justify-center gap-1 px-1 text-[10px] font-semibold transition-colors ${
+              mobileView === 'more' ? 'text-primary' : 'text-zinc-400 dark:text-zinc-500'
+            }`}
+          >
+            <Settings size={21} />
+            <span className="max-w-full truncate">{t.mobileMore}</span>
+            {trashedTasks.length > 0 && (
+              <span className="absolute end-[22%] top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[9px] text-white">
+                {trashedTasks.length}
+              </span>
+            )}
+          </button>
+        </nav>
       </main>
       <AnimatePresence>
         {reminderToast && (
@@ -1953,7 +2049,7 @@ export default function App() {
             initial={{ opacity: 0, y: 20, scale: 0.98 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 12, scale: 0.98 }}
-            className={`fixed bottom-5 z-50 flex max-w-[calc(100vw-2rem)] items-center gap-3 rounded-lg border border-zinc-200 bg-white px-4 py-3 shadow-xl shadow-black/10 dark:border-zinc-700 dark:bg-zinc-800 ${
+            className={`fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] z-50 flex max-w-[calc(100vw-2rem)] items-center gap-3 rounded-lg border border-zinc-200 bg-white px-4 py-3 shadow-xl shadow-black/10 dark:border-zinc-700 dark:bg-zinc-800 md:bottom-5 ${
               language === 'ar' ? 'right-5' : 'left-5'
             }`}
             role="alert"
@@ -1980,7 +2076,7 @@ export default function App() {
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 12 }}
-            className={`fixed bottom-5 z-50 flex max-w-[calc(100vw-2rem)] items-center gap-3 rounded-lg border border-zinc-200 bg-white px-4 py-3 shadow-xl shadow-black/10 dark:border-zinc-700 dark:bg-zinc-800 ${
+            className={`fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] z-50 flex max-w-[calc(100vw-2rem)] items-center gap-3 rounded-lg border border-zinc-200 bg-white px-4 py-3 shadow-xl shadow-black/10 dark:border-zinc-700 dark:bg-zinc-800 md:bottom-5 ${
               language === 'ar' ? 'left-5' : 'right-5'
             }`}
             role="status"
@@ -2002,7 +2098,7 @@ export default function App() {
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 12 }}
-            className={`fixed bottom-20 z-50 flex max-w-[calc(100vw-2rem)] items-center gap-3 rounded-lg border border-zinc-200 bg-white px-4 py-3 shadow-xl shadow-black/10 dark:border-zinc-700 dark:bg-zinc-800 ${
+            className={`fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] z-50 flex max-w-[calc(100vw-2rem)] items-center gap-3 rounded-lg border border-zinc-200 bg-white px-4 py-3 shadow-xl shadow-black/10 dark:border-zinc-700 dark:bg-zinc-800 md:bottom-20 ${
               language === 'ar' ? 'right-5' : 'left-5'
             }`}
             role="status"
@@ -2025,7 +2121,7 @@ export default function App() {
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 12 }}
-            className={`fixed bottom-20 z-50 flex max-w-[calc(100vw-2rem)] items-center gap-3 rounded-lg border border-emerald-200 bg-white px-4 py-3 shadow-xl shadow-black/10 dark:border-emerald-500/20 dark:bg-zinc-800 ${
+            className={`fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] z-50 flex max-w-[calc(100vw-2rem)] items-center gap-3 rounded-lg border border-emerald-200 bg-white px-4 py-3 shadow-xl shadow-black/10 dark:border-emerald-500/20 dark:bg-zinc-800 md:bottom-20 ${
               language === 'ar' ? 'left-5' : 'right-5'
             }`}
             role="status"
@@ -2048,7 +2144,7 @@ export default function App() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[60] flex items-center justify-center bg-black/45 p-4 backdrop-blur-sm"
+            className="fixed inset-0 z-[60] flex items-end justify-center bg-black/45 p-0 backdrop-blur-sm sm:items-center sm:p-4"
             role="dialog"
             aria-modal="true"
           >
@@ -2056,7 +2152,7 @@ export default function App() {
               initial={{ opacity: 0, y: 16, scale: 0.98 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: 12, scale: 0.98 }}
-              className="w-full max-w-md rounded-lg border border-zinc-200 bg-white p-6 shadow-2xl dark:border-zinc-700 dark:bg-zinc-900"
+              className="max-h-[92dvh] w-full max-w-md overflow-hidden rounded-t-lg border border-zinc-200 bg-white p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] shadow-2xl dark:border-zinc-700 dark:bg-zinc-900 sm:rounded-lg sm:p-6"
             >
               <div className="flex items-start justify-between gap-4">
                 <div>
@@ -2068,13 +2164,13 @@ export default function App() {
                     setShowNewDayModal(false);
                     setSelectedNewDayTaskIds([]);
                   }}
-                  className="p-1 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200"
+                  className="flex h-11 w-11 shrink-0 items-center justify-center text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200"
                   aria-label={t.cancel}
                 >
                   <X size={20} />
                 </button>
               </div>
-              <div className="mt-5 max-h-64 space-y-2 overflow-y-auto pe-1 custom-scrollbar">
+              <div className="mt-4 max-h-[42dvh] space-y-2 overflow-y-auto pe-1 custom-scrollbar sm:mt-5 sm:max-h-64">
                 {newDayIncompleteTasks.length > 0 ? (
                   <>
                     <label className="mb-3 flex cursor-pointer items-center gap-3 rounded-lg bg-zinc-100 px-3 py-2.5 text-sm font-semibold text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">
@@ -2091,7 +2187,7 @@ export default function App() {
                     {newDayIncompleteTasks.map(task => (
                       <label
                         key={task.id}
-                        className="flex cursor-pointer items-start gap-3 rounded-lg border border-zinc-200 px-3 py-3 transition-colors hover:border-primary/50 dark:border-zinc-700"
+                        className="flex min-h-14 cursor-pointer items-start gap-3 rounded-lg border border-zinc-200 px-3 py-3 transition-colors hover:border-primary/50 dark:border-zinc-700"
                       >
                         <input
                           type="checkbox"
@@ -2122,7 +2218,7 @@ export default function App() {
                 <button
                   onClick={() => finishSelectedDay('move')}
                   disabled={selectedNewDayTaskIds.length === 0}
-                  className="flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-3 text-sm font-bold text-white hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40"
+                  className="flex min-h-12 items-center justify-center gap-2 rounded-lg bg-primary px-4 py-3 text-sm font-bold text-white hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   <CalendarPlus size={17} />
                   {t.moveToTomorrow}
@@ -2130,13 +2226,13 @@ export default function App() {
                 <button
                   onClick={() => finishSelectedDay('keep')}
                   disabled={selectedNewDayTaskIds.length === 0}
-                  className="rounded-lg bg-zinc-100 px-4 py-3 text-sm font-bold text-zinc-700 hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
+                  className="min-h-12 rounded-lg bg-zinc-100 px-4 py-3 text-sm font-bold text-zinc-700 hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
                 >
                   {t.keepOnToday}
                 </button>
                 <button
                   onClick={() => finishSelectedDay('archive-only')}
-                  className="flex items-center justify-center gap-2 rounded-lg border border-zinc-200 px-4 py-3 text-sm font-bold text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                  className="flex min-h-12 items-center justify-center gap-2 rounded-lg border border-zinc-200 px-4 py-3 text-sm font-bold text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
                 >
                   <Archive size={17} />
                   {t.archiveCompletedOnly}
@@ -2146,7 +2242,7 @@ export default function App() {
                     setShowNewDayModal(false);
                     setSelectedNewDayTaskIds([]);
                   }}
-                  className="px-4 py-2 text-sm font-medium text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100"
+                  className="min-h-11 px-4 py-2 text-sm font-medium text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100"
                 >
                   {t.cancel}
                 </button>
@@ -2161,7 +2257,7 @@ export default function App() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[70] flex items-center justify-center bg-black/45 p-4 backdrop-blur-sm"
+            className="fixed inset-0 z-[70] flex items-end justify-center bg-black/45 p-0 backdrop-blur-sm sm:items-center sm:p-4"
             role="dialog"
             aria-modal="true"
           >
@@ -2169,13 +2265,13 @@ export default function App() {
               initial={{ opacity: 0, y: 14, scale: 0.98 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: 10, scale: 0.98 }}
-              className="w-full max-w-sm rounded-lg border border-zinc-200 bg-white p-5 shadow-2xl dark:border-zinc-700 dark:bg-zinc-900"
+              className="w-full max-w-sm rounded-t-lg border border-zinc-200 bg-white p-5 pb-[calc(1.25rem+env(safe-area-inset-bottom))] shadow-2xl dark:border-zinc-700 dark:bg-zinc-900 sm:rounded-lg"
             >
               <div className="flex items-start justify-between gap-4">
                 <h2 className="text-lg font-bold text-zinc-900 dark:text-white">{t.editTaskTime}</h2>
                 <button
                   onClick={closeTaskTimeEditor}
-                  className="p-1 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200"
+                  className="flex h-11 w-11 items-center justify-center text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200"
                   aria-label={t.cancel}
                 >
                   <X size={19} />
@@ -2188,7 +2284,7 @@ export default function App() {
                     type="date"
                     value={taskTimeDate}
                     onChange={event => setTaskTimeDate(event.target.value)}
-                    className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2.5 text-sm text-zinc-800 outline-none focus:border-primary dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                    className="min-h-12 w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2.5 text-base text-zinc-800 outline-none focus:border-primary dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 sm:text-sm"
                   />
                 </label>
                 <label>
@@ -2197,7 +2293,7 @@ export default function App() {
                     type="time"
                     value={taskTimeValue}
                     onChange={event => setTaskTimeValue(event.target.value)}
-                    className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2.5 text-sm text-zinc-800 outline-none focus:border-primary dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                    className="min-h-12 w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2.5 text-base text-zinc-800 outline-none focus:border-primary dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 sm:text-sm"
                   />
                 </label>
               </div>
@@ -2226,7 +2322,7 @@ export default function App() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[80] flex items-center justify-center bg-black/45 p-4 backdrop-blur-sm"
+            className="fixed inset-0 z-[80] flex items-end justify-center bg-black/45 p-0 backdrop-blur-sm sm:items-center sm:p-4"
             role="dialog"
             aria-modal="true"
           >
@@ -2238,7 +2334,7 @@ export default function App() {
                 event.preventDefault();
                 void saveManualTask();
               }}
-              className="max-h-[calc(100vh-2rem)] w-full max-w-lg overflow-y-auto rounded-lg border border-zinc-200 bg-white p-5 shadow-2xl custom-scrollbar dark:border-zinc-700 dark:bg-zinc-900 sm:p-6"
+              className="max-h-[94dvh] w-full max-w-lg overflow-y-auto rounded-t-lg border border-zinc-200 bg-white p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] shadow-2xl custom-scrollbar dark:border-zinc-700 dark:bg-zinc-900 sm:max-h-[calc(100vh-2rem)] sm:rounded-lg sm:p-6"
             >
               <div className="flex items-start justify-between gap-4">
                 <h2 className="text-xl font-bold text-zinc-900 dark:text-white">
@@ -2247,7 +2343,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={closeManualTaskForm}
-                  className="p-1 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200"
+                  className="flex h-11 w-11 shrink-0 items-center justify-center text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200"
                   aria-label={t.cancel}
                 >
                   <X size={20} />
@@ -2269,7 +2365,7 @@ export default function App() {
                     onChange={event => setManualTitle(event.target.value)}
                     required
                     autoFocus
-                    className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2.5 text-sm text-zinc-800 outline-none focus:border-primary dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                    className="min-h-12 w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2.5 text-base text-zinc-800 outline-none focus:border-primary dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 sm:text-sm"
                   />
                 </label>
 
@@ -2281,7 +2377,7 @@ export default function App() {
                       value={manualDate}
                       onChange={event => setManualDate(event.target.value)}
                       required
-                      className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2.5 text-sm text-zinc-800 outline-none focus:border-primary dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                      className="min-h-12 w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2.5 text-base text-zinc-800 outline-none focus:border-primary dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 sm:text-sm"
                     />
                   </label>
                   <label>
@@ -2295,7 +2391,7 @@ export default function App() {
                         setManualTime(event.target.value);
                         setManualFormError('');
                       }}
-                      className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2.5 text-sm text-zinc-800 outline-none focus:border-primary dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                      className="min-h-12 w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2.5 text-base text-zinc-800 outline-none focus:border-primary dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 sm:text-sm"
                     />
                   </label>
                 </div>
@@ -2306,7 +2402,7 @@ export default function App() {
                     <select
                       value={manualCategory}
                       onChange={event => setManualCategory(event.target.value as Task['category'])}
-                      className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2.5 text-sm text-zinc-800 outline-none focus:border-primary dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                      className="min-h-12 w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2.5 text-base text-zinc-800 outline-none focus:border-primary dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 sm:text-sm"
                     >
                       {Object.entries(t.categories).map(([value, label]) => (
                         <option key={value} value={value}>{label}</option>
@@ -2318,7 +2414,7 @@ export default function App() {
                     <select
                       value={manualPriority}
                       onChange={event => setManualPriority(event.target.value as Task['priority'])}
-                      className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2.5 text-sm text-zinc-800 outline-none focus:border-primary dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                      className="min-h-12 w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2.5 text-base text-zinc-800 outline-none focus:border-primary dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 sm:text-sm"
                     >
                       <option value="low">{t.low}</option>
                       <option value="medium">{t.medium}</option>
@@ -2335,7 +2431,7 @@ export default function App() {
                       setManualReminder(event.target.value);
                       setManualFormError('');
                     }}
-                    className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2.5 text-sm text-zinc-800 outline-none focus:border-primary dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                    className="min-h-12 w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2.5 text-base text-zinc-800 outline-none focus:border-primary dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 sm:text-sm"
                   >
                     {reminderOptions.map(option => (
                       <option key={option.value} value={option.value}>{option.label}</option>
@@ -2351,7 +2447,7 @@ export default function App() {
                     value={manualNotes}
                     onChange={event => setManualNotes(event.target.value)}
                     rows={3}
-                    className="w-full resize-y rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2.5 text-sm text-zinc-800 outline-none focus:border-primary dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                    className="min-h-24 w-full resize-y rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2.5 text-base text-zinc-800 outline-none focus:border-primary dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 sm:text-sm"
                   />
                 </label>
               </div>
@@ -2360,18 +2456,18 @@ export default function App() {
                 <p className="mt-3 text-xs font-medium text-red-500">{manualFormError}</p>
               )}
 
-              <div className="mt-6 flex gap-2">
+              <div className="sticky bottom-0 -mx-4 mt-6 flex gap-2 border-t border-zinc-100 bg-white px-4 pb-1 pt-3 dark:border-zinc-800 dark:bg-zinc-900 sm:static sm:mx-0 sm:border-0 sm:p-0">
                 <button
                   type="submit"
                   disabled={!manualTitle.trim() || !manualDate}
-                  className="flex-1 rounded-lg bg-primary px-4 py-3 text-sm font-bold text-white hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40"
+                  className="min-h-12 flex-1 rounded-lg bg-primary px-4 py-3 text-sm font-bold text-white hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   {t.save}
                 </button>
                 <button
                   type="button"
                   onClick={closeManualTaskForm}
-                  className="rounded-lg bg-zinc-100 px-4 py-3 text-sm font-bold text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700"
+                  className="min-h-12 rounded-lg bg-zinc-100 px-4 py-3 text-sm font-bold text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700"
                 >
                   {t.cancel}
                 </button>
