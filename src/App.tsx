@@ -32,7 +32,8 @@ import {
   X,
   Plus,
   History,
-  ShieldCheck
+  ShieldCheck,
+  Pencil
 } from 'lucide-react';
 import { Task, ChatMessage, ChatConversation, ScheduledEvent, TrashedTask } from './types';
 import { parseScheduledEvent, scheduledEventTimestamp } from './dateParser';
@@ -69,8 +70,27 @@ function generateChatTitle(message: string, language: Language) {
   return title || (language === 'ar' ? 'محادثة جديدة' : 'New Chat');
 }
 
-function normalizeTaskTime(time?: string) {
-  if (!time) return null;
+function normalizeStoredChat(chat: Partial<ChatConversation>, language: Language): ChatConversation | null {
+  if (!chat.id || !Array.isArray(chat.messages)) return null;
+  const now = new Date().toISOString();
+  return {
+    id: chat.id,
+    title: typeof chat.title === 'string' && chat.title.trim()
+      ? chat.title
+      : language === 'ar' ? 'محادثة جديدة' : 'New Chat',
+    messages: chat.messages.filter(message =>
+      message &&
+      (message.role === 'user' || message.role === 'assistant') &&
+      typeof message.content === 'string'
+    ),
+    createdAt: chat.createdAt || now,
+    updatedAt: chat.updatedAt || chat.createdAt || now,
+    isTemporary: false,
+  };
+}
+
+function normalizeTaskTime(time?: unknown) {
+  if (typeof time !== 'string' || !time.trim()) return null;
   const normalized = time.trim().toLowerCase();
   const match = normalized.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm|ص|م)?/);
   if (!match) return null;
@@ -205,6 +225,22 @@ const translations = {
     deleteChat: 'حذف المحادثة',
     deleteChatConfirm: 'هل أنت متأكد من حذف هذه المحادثة؟',
     noChatHistory: 'لا توجد محادثات محفوظة بعد.',
+    addTask: 'إضافة مهمة',
+    editTask: 'تعديل المهمة',
+    taskTitle: 'عنوان المهمة',
+    category: 'التصنيف',
+    priority: 'الأولوية',
+    notes: 'ملاحظات',
+    optional: 'اختياري',
+    low: 'منخفضة',
+    medium: 'متوسطة',
+    high: 'عالية',
+    manualReminderNeedsTime: 'يجب إضافة وقت صالح عند اختيار تذكير.',
+    offlineNotice: 'أنت غير متصل، سيتم حفظ المهام على جهازك.',
+    chatFallback: 'حدث خطأ في المحادثة، لكن يمكنك إضافة المهمة يدويًا.',
+    voiceFallback: 'لم يعمل الميكروفون، يمكنك كتابة المهمة أو إضافتها يدويًا.',
+    addFromText: 'إضافة من النص',
+    taskSaved: 'تم حفظ المهمة على جهازك.',
     categories: {
       work: 'عمل',
       personal: 'شخصي',
@@ -300,6 +336,22 @@ const translations = {
     deleteChat: 'Delete chat',
     deleteChatConfirm: 'Are you sure you want to delete this chat?',
     noChatHistory: 'No saved chats yet.',
+    addTask: 'Add Task',
+    editTask: 'Edit Task',
+    taskTitle: 'Task title',
+    category: 'Category',
+    priority: 'Priority',
+    notes: 'Notes',
+    optional: 'Optional',
+    low: 'Low',
+    medium: 'Medium',
+    high: 'High',
+    manualReminderNeedsTime: 'A valid time is required when a reminder is selected.',
+    offlineNotice: 'You are offline. Tasks will be saved on this device.',
+    chatFallback: 'Chat processing failed, but you can add the task manually.',
+    voiceFallback: 'Microphone did not work. You can type or add the task manually.',
+    addFromText: 'Add from text',
+    taskSaved: 'Task saved on this device.',
     categories: {
       work: 'Work',
       personal: 'Personal',
@@ -368,9 +420,15 @@ export default function App() {
   const [chats, setChats] = useState<ChatConversation[]>(() => {
     const savedChats = localStorage.getItem('chats');
     if (savedChats) {
-      const parsed = JSON.parse(savedChats) as ChatConversation[];
-      const normalChats = parsed.filter(chat => !chat.isTemporary);
-      if (normalChats.length > 0) return normalChats;
+      try {
+        const parsed = JSON.parse(savedChats) as Array<Partial<ChatConversation>>;
+        const normalChats = parsed
+          .map(chat => normalizeStoredChat(chat, language))
+          .filter((chat): chat is ChatConversation => Boolean(chat));
+        if (normalChats.length > 0) return normalChats;
+      } catch (error) {
+        console.error('Failed to restore saved chats:', error);
+      }
     }
 
     const legacyMessages = localStorage.getItem('chat_messages');
@@ -407,6 +465,19 @@ export default function App() {
   const [editingTaskTimeId, setEditingTaskTimeId] = useState<string | null>(null);
   const [taskTimeDate, setTaskTimeDate] = useState(todayKey);
   const [taskTimeValue, setTaskTimeValue] = useState('');
+  const [isOnline, setIsOnline] = useState(() => navigator.onLine);
+  const [showTaskForm, setShowTaskForm] = useState(false);
+  const [editingManualTaskId, setEditingManualTaskId] = useState<string | null>(null);
+  const [manualTitle, setManualTitle] = useState('');
+  const [manualDate, setManualDate] = useState(todayKey);
+  const [manualTime, setManualTime] = useState('');
+  const [manualCategory, setManualCategory] = useState<Task['category']>('other');
+  const [manualPriority, setManualPriority] = useState<Task['priority']>('medium');
+  const [manualReminder, setManualReminder] = useState('');
+  const [manualNotes, setManualNotes] = useState('');
+  const [manualFormError, setManualFormError] = useState('');
+  const [chatFallbackText, setChatFallbackText] = useState('');
+  const [taskSavedToast, setTaskSavedToast] = useState('');
   const [activeSection, setActiveSection] = useState<AppSection>('dashboard');
   const [calendarView, setCalendarView] = useState<CalendarViewMode>('week');
   const [selectedDate, setSelectedDate] = useState(todayKey);
@@ -428,13 +499,14 @@ export default function App() {
   ) => {
     const updatedAt = new Date().toISOString();
     const updateChat = (chat: ChatConversation) => {
-      const hasUserMessage = chat.messages.some(message => message.role === 'user');
+      const currentMessages = Array.isArray(chat.messages) ? chat.messages : [];
+      const hasUserMessage = currentMessages.some(message => message.role === 'user');
       return {
         ...chat,
         title: titleSource && !hasUserMessage
           ? generateChatTitle(titleSource, language)
           : chat.title,
-        messages: updater(chat.messages),
+        messages: updater(currentMessages),
         updatedAt,
       };
     };
@@ -451,11 +523,131 @@ export default function App() {
     updater: (messages: ChatMessage[]) => ChatMessage[],
     titleSource?: string,
   ) => {
+    if (!activeChat) {
+      const replacement = createChat(language, false);
+      const updatedMessages = updater(replacement.messages);
+      const chat = {
+        ...replacement,
+        title: titleSource ? generateChatTitle(titleSource, language) : replacement.title,
+        messages: updatedMessages,
+      };
+      setChats(current => [chat, ...current]);
+      setActiveChatId(chat.id);
+      return;
+    }
     updateChatMessages(activeChat.id, Boolean(temporaryChat), updater, titleSource);
   };
 
   const setMessages = (updater: (messages: ChatMessage[]) => ChatMessage[]) => {
     updateCurrentChat(updater);
+  };
+
+  const resetManualTaskForm = () => {
+    setEditingManualTaskId(null);
+    setManualTitle('');
+    setManualDate(selectedDate);
+    setManualTime('');
+    setManualCategory('other');
+    setManualPriority('medium');
+    setManualReminder('');
+    setManualNotes('');
+    setManualFormError('');
+  };
+
+  const openManualTaskForm = (title = '', task?: Task) => {
+    if (task) {
+      setEditingManualTaskId(task.id);
+      setManualTitle(task.title);
+      setManualDate(task.date);
+      setManualTime(normalizeTaskTime(task.time) || '');
+      setManualCategory(task.category);
+      setManualPriority(task.priority);
+      setManualReminder(task.reminderMinutes === null ? '' : String(task.reminderMinutes));
+      setManualNotes(task.notes || task.timeNote || '');
+    } else {
+      resetManualTaskForm();
+      setManualTitle(title);
+      setManualDate(selectedDate);
+    }
+    setManualFormError('');
+    setShowTaskForm(true);
+  };
+
+  const closeManualTaskForm = () => {
+    setShowTaskForm(false);
+    resetManualTaskForm();
+  };
+
+  const requestNotificationPermission = async () => {
+    if (!('Notification' in window)) {
+      setNotificationMessage(t.notificationsUnsupported);
+      return;
+    }
+    if (Notification.permission === 'granted') return;
+    const permission = await Notification.requestPermission();
+    if (permission === 'denied') setNotificationMessage(t.notificationsDenied);
+  };
+
+  const saveManualTask = async () => {
+    const title = manualTitle.trim();
+    const reminderMinutes = manualReminder === '' ? null : Number(manualReminder);
+    if (!title || !manualDate) return;
+    if (reminderMinutes !== null && !manualTime) {
+      setManualFormError(t.manualReminderNeedsTime);
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const task: Task = {
+      id: editingManualTaskId || globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2, 11),
+      title,
+      category: manualCategory,
+      priority: manualPriority,
+      time: manualTime || undefined,
+      notes: manualNotes.trim() || undefined,
+      date: manualDate,
+      reminderMinutes,
+      reminderNotifiedAt: null,
+      completed: editingManualTaskId
+        ? tasks.find(item => item.id === editingManualTaskId)?.completed || false
+        : false,
+      createdAt: editingManualTaskId
+        ? tasks.find(item => item.id === editingManualTaskId)?.createdAt || now
+        : now,
+    };
+
+    setTasks(current => editingManualTaskId
+      ? current.map(item => item.id === editingManualTaskId ? task : item)
+      : [task, ...current]
+    );
+    setSelectedDate(manualDate);
+    setActiveSection('dashboard');
+    setTaskSavedToast(t.taskSaved);
+    setChatFallbackText('');
+    closeManualTaskForm();
+
+    if (reminderMinutes !== null) {
+      await requestNotificationPermission();
+    }
+  };
+
+  const addTaskFromText = (text: string) => {
+    const title = text.trim();
+    if (!title) return;
+    const task: Task = {
+      id: globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2, 11),
+      title,
+      category: 'other',
+      priority: 'medium',
+      date: selectedDate,
+      reminderMinutes: null,
+      reminderNotifiedAt: null,
+      completed: false,
+      createdAt: new Date().toISOString(),
+    };
+    setTasks(current => [task, ...current]);
+    setTaskSavedToast(t.taskSaved);
+    setChatFallbackText('');
   };
 
   useEffect(() => {
@@ -468,6 +660,17 @@ export default function App() {
     document.documentElement.classList.toggle('dark', isDarkMode);
     localStorage.setItem('theme', isDarkMode ? 'dark' : 'light');
   }, [isDarkMode]);
+
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
 
   useEffect(() => {
     localStorage.setItem('tasks', JSON.stringify(tasks));
@@ -582,6 +785,12 @@ export default function App() {
   }, [newDayToast]);
 
   useEffect(() => {
+    if (!taskSavedToast) return;
+    const timeoutId = window.setTimeout(() => setTaskSavedToast(''), 5_000);
+    return () => window.clearTimeout(timeoutId);
+  }, [taskSavedToast]);
+
+  useEffect(() => {
     const textarea = textareaRef.current;
     if (!textarea) return;
     textarea.style.height = 'auto';
@@ -607,14 +816,24 @@ export default function App() {
     if (!inputValue.trim() || isLoading) return;
 
     const userMessage = inputValue;
-    const targetChatId = activeChat.id;
-    const targetIsTemporary = Boolean(temporaryChat);
+    let targetChat = activeChat;
+    let targetIsTemporary = Boolean(temporaryChat);
+
+    if (!targetChat) {
+      targetChat = createChat(language, false);
+      targetIsTemporary = false;
+      setChats(current => [targetChat as ChatConversation, ...current]);
+      setActiveChatId(targetChat.id);
+    }
+
+    const targetChatId = targetChat.id;
     const detectedEvent = parseScheduledEvent(userMessage);
     if (detectedEvent) {
       setScheduledEvents(prev => [...prev, detectedEvent]);
     }
     setInputValue('');
     setSpeechError('');
+    setChatFallbackText('');
     updateChatMessages(
       targetChatId,
       targetIsTemporary,
@@ -630,30 +849,65 @@ export default function App() {
         body: JSON.stringify({ message: userMessage, language }),
       });
 
-      const data = await res.json();
-      
-      if (data.tasks && data.tasks.length > 0) {
-        setPendingTasks(data.tasks.map((task: Task) => ({
-          ...task,
-          time: normalizeTaskTime(task.time) || undefined,
-          timeNote: normalizeTaskTime(task.time) ? task.timeNote : task.timeNote || task.time,
-          date: detectedEvent?.date || selectedDate,
-          reminderMinutes: task.reminderMinutes ?? null,
-          reminderNotifiedAt: task.reminderNotifiedAt ?? null,
-        })));
-      } else {
+      const responseText = await res.text();
+      let data: { reply?: string; tasks?: unknown; error?: string };
+
+      try {
+        data = JSON.parse(responseText);
+      } catch (error) {
+        console.error('Chat API returned invalid JSON:', error, responseText);
+        throw new Error('Invalid chat API response');
+      }
+
+      if (!res.ok) {
+        console.error('Chat API request failed:', res.status, data.error || responseText);
+        throw new Error(data.error || `Chat API failed with status ${res.status}`);
+      }
+
+      try {
+        if (Array.isArray(data.tasks) && data.tasks.length > 0) {
+          setPendingTasks(data.tasks.map((rawTask) => {
+            const task = rawTask as Partial<Task>;
+            if (typeof task.title !== 'string') {
+              throw new Error('Task payload is missing a title');
+            }
+
+            const normalizedTime = normalizeTaskTime(task.time);
+            return {
+              id: task.id || globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2, 11),
+              title: task.title,
+              category: task.category || 'other',
+              priority: task.priority || 'medium',
+              time: normalizedTime || undefined,
+              timeNote: normalizedTime ? task.timeNote : task.timeNote || (typeof task.time === 'string' ? task.time : undefined),
+              date: detectedEvent?.date || selectedDate,
+              reminderMinutes: task.reminderMinutes ?? null,
+              reminderNotifiedAt: task.reminderNotifiedAt ?? null,
+              completed: false,
+              createdAt: task.createdAt || new Date().toISOString(),
+            } satisfies Task;
+          }));
+        } else {
+          setPendingTasks([]);
+        }
+      } catch (taskError) {
+        console.error('Failed to parse extracted tasks; chat reply will still be shown:', taskError, data.tasks);
         setPendingTasks([]);
       }
 
       updateChatMessages(targetChatId, targetIsTemporary, prev => [...prev, {
         role: 'assistant', 
-        content: data.reply,
-        tasks: data.tasks 
+        content: typeof data.reply === 'string' && data.reply.trim()
+          ? data.reply
+          : language === 'ar' ? 'تم استلام رسالتك.' : 'Your message was received.',
+        tasks: Array.isArray(data.tasks) ? data.tasks as Task[] : undefined,
       }]);
     } catch (error) {
+      console.error('Failed to process chat message:', error);
+      setChatFallbackText(userMessage);
       updateChatMessages(targetChatId, targetIsTemporary, prev => [...prev, {
         role: 'assistant', 
-        content: t.error
+        content: t.chatFallback
       }]);
     } finally {
       setIsLoading(false);
@@ -1132,14 +1386,29 @@ export default function App() {
                   <h1 className="text-4xl font-bold text-zinc-900 mb-2 tracking-tight dark:text-zinc-50">{t.taskList}</h1>
                   <p className="text-zinc-500 text-lg dark:text-zinc-400">{t.todaySummary(todayTaskCount, todayEventCount)}</p>
                 </div>
-                <button
-                  onClick={openNewDayModal}
-                  className="flex items-center gap-2 rounded-lg bg-zinc-900 px-4 py-3 text-sm font-bold text-white transition-colors hover:bg-zinc-700 dark:bg-white dark:text-zinc-950 dark:hover:bg-zinc-200"
-                >
-                  <CalendarPlus size={18} />
-                  {t.newDay}
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={() => openManualTaskForm()}
+                    className="flex items-center gap-2 rounded-lg bg-primary px-4 py-3 text-sm font-bold text-white transition-colors hover:bg-primary/90"
+                  >
+                    <Plus size={18} />
+                    {t.addTask}
+                  </button>
+                  <button
+                    onClick={openNewDayModal}
+                    className="flex items-center gap-2 rounded-lg bg-zinc-900 px-4 py-3 text-sm font-bold text-white transition-colors hover:bg-zinc-700 dark:bg-white dark:text-zinc-950 dark:hover:bg-zinc-200"
+                  >
+                    <CalendarPlus size={18} />
+                    {t.newDay}
+                  </button>
+                </div>
               </header>
+
+              {!isOnline && (
+                <div className="mb-5 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-200">
+                  {t.offlineNotice}
+                </div>
+              )}
 
               <CalendarPanel
                 language={language}
@@ -1273,6 +1542,9 @@ export default function App() {
                           <span className="font-semibold">{t.timeNote}:</span> {task.timeNote}
                         </p>
                       )}
+                      {task.notes && (
+                        <p className="mt-2 break-words text-xs text-zinc-500 dark:text-zinc-400">{task.notes}</p>
+                      )}
                       <div className="mt-3 flex max-w-sm flex-wrap items-end gap-2">
                         <label className="min-w-44 flex-1">
                           <span className="mb-1 block text-[11px] font-semibold text-zinc-500 dark:text-zinc-400">
@@ -1306,12 +1578,21 @@ export default function App() {
                         </p>
                       )}
                     </div>
-                    <button 
-                      onClick={() => deleteTask(task.id)}
-                      className="text-zinc-200 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all p-2 bg-zinc-50 rounded-xl dark:bg-zinc-800 dark:text-zinc-600 dark:hover:text-red-400"
-                    >
-                      <Trash2 size={20} />
-                    </button>
+                    <div className="flex shrink-0 items-center gap-1 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100">
+                      <button
+                        onClick={() => openManualTaskForm('', task)}
+                        className="rounded-xl bg-zinc-50 p-2 text-zinc-300 transition-colors hover:text-primary dark:bg-zinc-800 dark:text-zinc-600"
+                        title={t.editTask}
+                      >
+                        <Pencil size={18} />
+                      </button>
+                      <button
+                        onClick={() => deleteTask(task.id)}
+                        className="rounded-xl bg-zinc-50 p-2 text-zinc-300 transition-colors hover:text-red-500 dark:bg-zinc-800 dark:text-zinc-600 dark:hover:text-red-400"
+                      >
+                        <Trash2 size={20} />
+                      </button>
+                    </div>
                   </motion.div>
                 ))}
               </AnimatePresence>
@@ -1583,6 +1864,25 @@ export default function App() {
           </div>
 
           <div className="p-4 sm:p-6 bg-white border-t border-zinc-100 transition-colors dark:bg-zinc-900 dark:border-zinc-800">
+            {chatFallbackText && (
+              <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-500/20 dark:bg-amber-500/10">
+                <p className="text-xs font-medium text-amber-800 dark:text-amber-200">{t.chatFallback}</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <button
+                    onClick={() => addTaskFromText(chatFallbackText)}
+                    className="rounded-md bg-primary px-3 py-2 text-xs font-bold text-white"
+                  >
+                    {t.addFromText}
+                  </button>
+                  <button
+                    onClick={() => openManualTaskForm(chatFallbackText)}
+                    className="rounded-md border border-amber-300 px-3 py-2 text-xs font-bold text-amber-800 dark:border-amber-500/30 dark:text-amber-200"
+                  >
+                    {t.addTask}
+                  </button>
+                </div>
+              </div>
+            )}
             <div className="flex w-full items-end gap-2.5 sm:gap-3">
               <button
                 onClick={toggleListening}
@@ -1630,7 +1930,16 @@ export default function App() {
               </div>
             )}
             {speechError && (
-              <p className="mt-3 text-center text-xs font-medium text-red-500">{speechError}</p>
+              <div className="mt-3 text-center">
+                <p className="text-xs font-medium text-red-500">{speechError}</p>
+                <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{t.voiceFallback}</p>
+                <button
+                  onClick={() => openManualTaskForm(inputValue)}
+                  className="mt-2 rounded-md bg-primary/10 px-3 py-2 text-xs font-bold text-primary"
+                >
+                  {t.addTask}
+                </button>
+              </div>
             )}
             {!isListening && !speechError && (
               <p className="text-[10px] text-center text-zinc-400 mt-4 font-medium dark:text-zinc-500">{t.inputHint}</p>
@@ -1702,6 +2011,29 @@ export default function App() {
             <span className="text-sm font-medium text-zinc-800 dark:text-zinc-100">{newDayToast}</span>
             <button
               onClick={() => setNewDayToast('')}
+              className="shrink-0 p-1 text-zinc-400 hover:text-zinc-800 dark:hover:text-zinc-100"
+              aria-label={t.dismiss}
+            >
+              <X size={16} />
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+      <AnimatePresence>
+        {taskSavedToast && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 12 }}
+            className={`fixed bottom-20 z-50 flex max-w-[calc(100vw-2rem)] items-center gap-3 rounded-lg border border-emerald-200 bg-white px-4 py-3 shadow-xl shadow-black/10 dark:border-emerald-500/20 dark:bg-zinc-800 ${
+              language === 'ar' ? 'left-5' : 'right-5'
+            }`}
+            role="status"
+          >
+            <CheckCircle2 className="shrink-0 text-emerald-500" size={18} />
+            <span className="text-sm font-medium text-zinc-800 dark:text-zinc-100">{taskSavedToast}</span>
+            <button
+              onClick={() => setTaskSavedToast('')}
               className="shrink-0 p-1 text-zinc-400 hover:text-zinc-800 dark:hover:text-zinc-100"
               aria-label={t.dismiss}
             >
@@ -1885,6 +2217,166 @@ export default function App() {
                 </button>
               </div>
             </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+      <AnimatePresence>
+        {showTaskForm && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[80] flex items-center justify-center bg-black/45 p-4 backdrop-blur-sm"
+            role="dialog"
+            aria-modal="true"
+          >
+            <motion.form
+              initial={{ opacity: 0, y: 14, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 10, scale: 0.98 }}
+              onSubmit={event => {
+                event.preventDefault();
+                void saveManualTask();
+              }}
+              className="max-h-[calc(100vh-2rem)] w-full max-w-lg overflow-y-auto rounded-lg border border-zinc-200 bg-white p-5 shadow-2xl custom-scrollbar dark:border-zinc-700 dark:bg-zinc-900 sm:p-6"
+            >
+              <div className="flex items-start justify-between gap-4">
+                <h2 className="text-xl font-bold text-zinc-900 dark:text-white">
+                  {editingManualTaskId ? t.editTask : t.addTask}
+                </h2>
+                <button
+                  type="button"
+                  onClick={closeManualTaskForm}
+                  className="p-1 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200"
+                  aria-label={t.cancel}
+                >
+                  <X size={20} />
+                </button>
+              </div>
+
+              {!isOnline && (
+                <p className="mt-4 rounded-lg bg-amber-50 px-3 py-2.5 text-xs font-medium text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">
+                  {t.offlineNotice}
+                </p>
+              )}
+
+              <div className="mt-5 grid gap-4">
+                <label>
+                  <span className="mb-1.5 block text-xs font-semibold text-zinc-500 dark:text-zinc-400">{t.taskTitle}</span>
+                  <input
+                    type="text"
+                    value={manualTitle}
+                    onChange={event => setManualTitle(event.target.value)}
+                    required
+                    autoFocus
+                    className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2.5 text-sm text-zinc-800 outline-none focus:border-primary dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                  />
+                </label>
+
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <label>
+                    <span className="mb-1.5 block text-xs font-semibold text-zinc-500 dark:text-zinc-400">{t.taskDate}</span>
+                    <input
+                      type="date"
+                      value={manualDate}
+                      onChange={event => setManualDate(event.target.value)}
+                      required
+                      className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2.5 text-sm text-zinc-800 outline-none focus:border-primary dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                    />
+                  </label>
+                  <label>
+                    <span className="mb-1.5 block text-xs font-semibold text-zinc-500 dark:text-zinc-400">
+                      {t.taskTime} <span className="font-normal">({t.optional})</span>
+                    </span>
+                    <input
+                      type="time"
+                      value={manualTime}
+                      onChange={event => {
+                        setManualTime(event.target.value);
+                        setManualFormError('');
+                      }}
+                      className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2.5 text-sm text-zinc-800 outline-none focus:border-primary dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                    />
+                  </label>
+                </div>
+
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <label>
+                    <span className="mb-1.5 block text-xs font-semibold text-zinc-500 dark:text-zinc-400">{t.category}</span>
+                    <select
+                      value={manualCategory}
+                      onChange={event => setManualCategory(event.target.value as Task['category'])}
+                      className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2.5 text-sm text-zinc-800 outline-none focus:border-primary dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                    >
+                      {Object.entries(t.categories).map(([value, label]) => (
+                        <option key={value} value={value}>{label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span className="mb-1.5 block text-xs font-semibold text-zinc-500 dark:text-zinc-400">{t.priority}</span>
+                    <select
+                      value={manualPriority}
+                      onChange={event => setManualPriority(event.target.value as Task['priority'])}
+                      className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2.5 text-sm text-zinc-800 outline-none focus:border-primary dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                    >
+                      <option value="low">{t.low}</option>
+                      <option value="medium">{t.medium}</option>
+                      <option value="high">{t.high}</option>
+                    </select>
+                  </label>
+                </div>
+
+                <label>
+                  <span className="mb-1.5 block text-xs font-semibold text-zinc-500 dark:text-zinc-400">{t.reminder}</span>
+                  <select
+                    value={manualReminder}
+                    onChange={event => {
+                      setManualReminder(event.target.value);
+                      setManualFormError('');
+                    }}
+                    className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2.5 text-sm text-zinc-800 outline-none focus:border-primary dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                  >
+                    {reminderOptions.map(option => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                </label>
+
+                <label>
+                  <span className="mb-1.5 block text-xs font-semibold text-zinc-500 dark:text-zinc-400">
+                    {t.notes} <span className="font-normal">({t.optional})</span>
+                  </span>
+                  <textarea
+                    value={manualNotes}
+                    onChange={event => setManualNotes(event.target.value)}
+                    rows={3}
+                    className="w-full resize-y rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2.5 text-sm text-zinc-800 outline-none focus:border-primary dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                  />
+                </label>
+              </div>
+
+              {manualFormError && (
+                <p className="mt-3 text-xs font-medium text-red-500">{manualFormError}</p>
+              )}
+
+              <div className="mt-6 flex gap-2">
+                <button
+                  type="submit"
+                  disabled={!manualTitle.trim() || !manualDate}
+                  className="flex-1 rounded-lg bg-primary px-4 py-3 text-sm font-bold text-white hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {t.save}
+                </button>
+                <button
+                  type="button"
+                  onClick={closeManualTaskForm}
+                  className="rounded-lg bg-zinc-100 px-4 py-3 text-sm font-bold text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700"
+                >
+                  {t.cancel}
+                </button>
+              </div>
+            </motion.form>
           </motion.div>
         )}
       </AnimatePresence>

@@ -5,6 +5,7 @@ export interface Task {
   priority: "low" | "medium" | "high";
   time?: string;
   timeNote?: string;
+  notes?: string;
   date: string;
   reminderMinutes: number | null;
   reminderNotifiedAt: string | null;
