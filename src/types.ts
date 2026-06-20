@@ -23,6 +23,15 @@ export interface ChatMessage {
   tasks?: Task[];
 }
 
+export interface ChatConversation {
+  id: string;
+  title: string;
+  messages: ChatMessage[];
+  createdAt: string;
+  updatedAt: string;
+  isTemporary: boolean;
+}
+
 export interface ScheduledEvent {
   id: string;
   title: string;

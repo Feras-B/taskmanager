@@ -29,9 +29,12 @@ import {
   CalendarPlus,
   RotateCcw,
   Archive,
-  X
+  X,
+  Plus,
+  History,
+  ShieldCheck
 } from 'lucide-react';
-import { Task, ChatMessage, ScheduledEvent, TrashedTask } from './types';
+import { Task, ChatMessage, ChatConversation, ScheduledEvent, TrashedTask } from './types';
 import { parseScheduledEvent, scheduledEventTimestamp } from './dateParser';
 import CalendarPanel from './CalendarPanel';
 import { CalendarViewMode, toDateKey } from './calendarUtils';
@@ -39,6 +42,32 @@ import { applyNewDayAction, NewDayAction } from './newDayUtils';
 
 type Language = 'ar' | 'en';
 type AppSection = 'dashboard' | 'trash';
+
+function createChat(language: Language, isTemporary: boolean): ChatConversation {
+  const now = new Date().toISOString();
+  return {
+    id: globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2, 11),
+    title: language === 'ar' ? 'محادثة جديدة' : 'New Chat',
+    messages: [{
+      role: 'assistant',
+      content: language === 'ar'
+        ? 'أهلاً بك! أنا مساعدك الذكي لتنظيم المهام. أخبرني ماذا يدور في ذهنك اليوم، وسأقوم بترتيبه لك.'
+        : "Welcome! I'm your smart task assistant. Tell me what's on your mind today and I'll organize it for you.",
+    }],
+    createdAt: now,
+    updatedAt: now,
+    isTemporary,
+  };
+}
+
+function generateChatTitle(message: string, language: Language) {
+  const cleaned = message
+    .trim()
+    .replace(/^(?:عندي|لدي|أريد|اريد|i have|i need|please)\s+/i, '');
+  const words = cleaned.split(/\s+/).filter(Boolean).slice(0, 4);
+  const title = words.join(' ').slice(0, 42).trim();
+  return title || (language === 'ar' ? 'محادثة جديدة' : 'New Chat');
+}
 
 function normalizeTaskTime(time?: string) {
   if (!time) return null;
@@ -169,6 +198,13 @@ const translations = {
     taskTime: 'الوقت',
     save: 'حفظ',
     timeNote: 'ملاحظة الوقت',
+    newChat: 'محادثة جديدة',
+    chatHistory: 'سجل المحادثات',
+    temporaryChat: 'محادثة مؤقتة',
+    temporaryChatNotice: 'هذه المحادثة مؤقتة ولن يتم حفظها',
+    deleteChat: 'حذف المحادثة',
+    deleteChatConfirm: 'هل أنت متأكد من حذف هذه المحادثة؟',
+    noChatHistory: 'لا توجد محادثات محفوظة بعد.',
     categories: {
       work: 'عمل',
       personal: 'شخصي',
@@ -257,6 +293,13 @@ const translations = {
     taskTime: 'Time',
     save: 'Save',
     timeNote: 'Time note',
+    newChat: 'New Chat',
+    chatHistory: 'Chat history',
+    temporaryChat: 'Temporary Chat',
+    temporaryChatNotice: 'This chat is temporary and will not be saved',
+    deleteChat: 'Delete chat',
+    deleteChatConfirm: 'Are you sure you want to delete this chat?',
+    noChatHistory: 'No saved chats yet.',
     categories: {
       work: 'Work',
       personal: 'Personal',
@@ -322,15 +365,34 @@ export default function App() {
       reminderNotifiedAt: event.reminderNotifiedAt ?? null,
     })) as ScheduledEvent[];
   });
-  const [messages, setMessages] = useState<ChatMessage[]>(() => {
-    const saved = localStorage.getItem('chat_messages');
-    return saved ? JSON.parse(saved) : [
-      { 
-        role: 'assistant', 
-        content: translations[language].welcome
-      }
-    ];
+  const [chats, setChats] = useState<ChatConversation[]>(() => {
+    const savedChats = localStorage.getItem('chats');
+    if (savedChats) {
+      const parsed = JSON.parse(savedChats) as ChatConversation[];
+      const normalChats = parsed.filter(chat => !chat.isTemporary);
+      if (normalChats.length > 0) return normalChats;
+    }
+
+    const legacyMessages = localStorage.getItem('chat_messages');
+    if (legacyMessages) {
+      const messages = JSON.parse(legacyMessages) as ChatMessage[];
+      const migrated = createChat(language, false);
+      const firstUserMessage = messages.find(message => message.role === 'user')?.content;
+      return [{
+        ...migrated,
+        title: firstUserMessage ? generateChatTitle(firstUserMessage, language) : migrated.title,
+        messages,
+      }];
+    }
+
+    return [createChat(language, false)];
   });
+  const [activeChatId, setActiveChatId] = useState(() => {
+    const savedId = localStorage.getItem('active_chat_id');
+    return savedId && chats.some(chat => chat.id === savedId) ? savedId : chats[0].id;
+  });
+  const [temporaryChat, setTemporaryChat] = useState<ChatConversation | null>(null);
+  const [showChatHistory, setShowChatHistory] = useState(false);
   const [pendingTasks, setPendingTasks] = useState<Task[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -355,6 +417,46 @@ export default function App() {
   const speechHandledRef = useRef(false);
   const speechManualStopRef = useRef(false);
   const t = translations[language];
+  const activeChat = temporaryChat || chats.find(chat => chat.id === activeChatId) || chats[0];
+  const messages = activeChat?.messages || [];
+
+  const updateChatMessages = (
+    chatId: string,
+    isTemporary: boolean,
+    updater: (messages: ChatMessage[]) => ChatMessage[],
+    titleSource?: string,
+  ) => {
+    const updatedAt = new Date().toISOString();
+    const updateChat = (chat: ChatConversation) => {
+      const hasUserMessage = chat.messages.some(message => message.role === 'user');
+      return {
+        ...chat,
+        title: titleSource && !hasUserMessage
+          ? generateChatTitle(titleSource, language)
+          : chat.title,
+        messages: updater(chat.messages),
+        updatedAt,
+      };
+    };
+
+    if (isTemporary) {
+      setTemporaryChat(current => current?.id === chatId ? updateChat(current) : current);
+      return;
+    }
+
+    setChats(current => current.map(chat => chat.id === chatId ? updateChat(chat) : chat));
+  };
+
+  const updateCurrentChat = (
+    updater: (messages: ChatMessage[]) => ChatMessage[],
+    titleSource?: string,
+  ) => {
+    updateChatMessages(activeChat.id, Boolean(temporaryChat), updater, titleSource);
+  };
+
+  const setMessages = (updater: (messages: ChatMessage[]) => ChatMessage[]) => {
+    updateCurrentChat(updater);
+  };
 
   useEffect(() => {
     document.documentElement.lang = language;
@@ -382,6 +484,17 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('scheduled_events', JSON.stringify(scheduledEvents));
   }, [scheduledEvents]);
+
+  useEffect(() => {
+    localStorage.setItem('chats', JSON.stringify(chats));
+    localStorage.removeItem('chat_messages');
+  }, [chats]);
+
+  useEffect(() => {
+    if (!temporaryChat) {
+      localStorage.setItem('active_chat_id', activeChatId);
+    }
+  }, [activeChatId, temporaryChat]);
 
   useEffect(() => {
     const checkReminders = () => {
@@ -476,10 +589,6 @@ export default function App() {
   }, [inputValue]);
 
   useEffect(() => {
-    localStorage.setItem('chat_messages', JSON.stringify(messages));
-  }, [messages]);
-
-  useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
@@ -498,13 +607,20 @@ export default function App() {
     if (!inputValue.trim() || isLoading) return;
 
     const userMessage = inputValue;
+    const targetChatId = activeChat.id;
+    const targetIsTemporary = Boolean(temporaryChat);
     const detectedEvent = parseScheduledEvent(userMessage);
     if (detectedEvent) {
       setScheduledEvents(prev => [...prev, detectedEvent]);
     }
     setInputValue('');
     setSpeechError('');
-    setMessages(prev => [...prev, { role: 'user', content: userMessage }]);
+    updateChatMessages(
+      targetChatId,
+      targetIsTemporary,
+      prev => [...prev, { role: 'user', content: userMessage }],
+      userMessage,
+    );
     setIsLoading(true);
 
     try {
@@ -529,13 +645,13 @@ export default function App() {
         setPendingTasks([]);
       }
 
-      setMessages(prev => [...prev, { 
+      updateChatMessages(targetChatId, targetIsTemporary, prev => [...prev, {
         role: 'assistant', 
         content: data.reply,
         tasks: data.tasks 
       }]);
     } catch (error) {
-      setMessages(prev => [...prev, { 
+      updateChatMessages(targetChatId, targetIsTemporary, prev => [...prev, {
         role: 'assistant', 
         content: t.error
       }]);
@@ -561,6 +677,51 @@ export default function App() {
       role: 'assistant',
       content: t.ignored
     }]);
+  };
+
+  const startNewChat = (isTemporary: boolean) => {
+    setInputValue('');
+    setPendingTasks([]);
+    setSpeechError('');
+    setShowChatHistory(false);
+
+    const chat = createChat(language, isTemporary);
+    if (isTemporary) {
+      setTemporaryChat(chat);
+      return;
+    }
+
+    setTemporaryChat(null);
+    setChats(prev => [chat, ...prev]);
+    setActiveChatId(chat.id);
+  };
+
+  const openSavedChat = (chatId: string) => {
+    setTemporaryChat(null);
+    setActiveChatId(chatId);
+    setPendingTasks([]);
+    setInputValue('');
+    setSpeechError('');
+    setShowChatHistory(false);
+  };
+
+  const deleteChat = (chatId: string) => {
+    if (!window.confirm(t.deleteChatConfirm)) return;
+
+    setChats(current => {
+      const remaining = current.filter(chat => chat.id !== chatId);
+      if (remaining.length > 0) {
+        if (activeChatId === chatId && !temporaryChat) {
+          setActiveChatId(remaining[0].id);
+        }
+        return remaining;
+      }
+
+      const replacement = createChat(language, false);
+      setActiveChatId(replacement.id);
+      return [replacement];
+    });
+    setPendingTasks([]);
   };
 
   const openNewDayModal = () => {
@@ -1242,24 +1403,123 @@ export default function App() {
 
         {/* Improved Chat Section */}
         <section className={`w-full md:w-96 lg:w-[450px] bg-white border-zinc-200 flex flex-col h-[55vh] md:h-full relative overflow-hidden shadow-[-10px_0_30px_rgba(0,0,0,0.02)] transition-colors dark:bg-zinc-900 dark:border-zinc-800 dark:shadow-black/20 ${language === 'ar' ? 'border-r' : 'border-l'}`}>
-          <div className="px-6 py-5 border-b border-zinc-100 flex items-center justify-between bg-white/80 backdrop-blur-md sticky top-0 z-10 dark:bg-zinc-900/85 dark:border-zinc-800">
-            <div className="flex items-center gap-3">
-              <div className="w-9 h-9 bg-primary/10 rounded-xl flex items-center justify-center text-primary">
-                <MessageSquare size={20} />
+          <div className="sticky top-0 z-10 border-b border-zinc-100 bg-white/90 px-4 py-4 backdrop-blur-md dark:border-zinc-800 dark:bg-zinc-900/90 sm:px-6">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex min-w-0 items-center gap-3">
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                  <MessageSquare size={20} />
+                </div>
+                <div className="min-w-0">
+                  <span className="block truncate font-bold leading-none text-zinc-900 dark:text-zinc-50">
+                    {activeChat?.title || t.newChat}
+                  </span>
+                  <span className="mt-1 inline-block text-[10px] font-medium uppercase text-zinc-400 dark:text-zinc-500">
+                    {temporaryChat ? t.temporaryChat : t.online}
+                  </span>
+                </div>
               </div>
-              <div>
-                <span className="font-bold text-zinc-900 block leading-none dark:text-zinc-50">{t.assistantTitle}</span>
-                <span className="text-[10px] text-zinc-400 font-medium uppercase mt-1 inline-block dark:text-zinc-500">{t.online}</span>
-              </div>
+              {isLoading && (
+                <div className="flex gap-1">
+                  <motion.div animate={{ scale: [1, 1.5, 1] }} transition={{ repeat: Infinity, duration: 1 }} className="w-1 h-1 bg-primary rounded-full" />
+                  <motion.div animate={{ scale: [1, 1.5, 1] }} transition={{ repeat: Infinity, duration: 1, delay: 0.2 }} className="w-1 h-1 bg-primary rounded-full" />
+                  <motion.div animate={{ scale: [1, 1.5, 1] }} transition={{ repeat: Infinity, duration: 1, delay: 0.4 }} className="w-1 h-1 bg-primary rounded-full" />
+                </div>
+              )}
             </div>
-            {isLoading && (
-              <div className="flex gap-1">
-                <motion.div animate={{ scale: [1, 1.5, 1] }} transition={{ repeat: Infinity, duration: 1 }} className="w-1 h-1 bg-primary rounded-full" />
-                <motion.div animate={{ scale: [1, 1.5, 1] }} transition={{ repeat: Infinity, duration: 1, delay: 0.2 }} className="w-1 h-1 bg-primary rounded-full" />
-                <motion.div animate={{ scale: [1, 1.5, 1] }} transition={{ repeat: Infinity, duration: 1, delay: 0.4 }} className="w-1 h-1 bg-primary rounded-full" />
-              </div>
-            )}
+            <div className="mt-3 grid grid-cols-3 gap-2">
+              <button
+                onClick={() => startNewChat(false)}
+                className="flex min-w-0 items-center justify-center gap-1.5 rounded-lg bg-primary px-2 py-2 text-[11px] font-bold text-white transition-colors hover:bg-primary/90"
+                title={t.newChat}
+              >
+                <Plus size={15} />
+                <span className="truncate">{t.newChat}</span>
+              </button>
+              <button
+                onClick={() => startNewChat(true)}
+                className={`flex min-w-0 items-center justify-center gap-1.5 rounded-lg border px-2 py-2 text-[11px] font-bold transition-colors ${
+                  temporaryChat
+                    ? 'border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200'
+                    : 'border-zinc-200 text-zinc-600 hover:border-amber-300 hover:text-amber-700 dark:border-zinc-700 dark:text-zinc-300'
+                }`}
+                title={t.temporaryChat}
+              >
+                <ShieldCheck size={15} />
+                <span className="truncate">{t.temporaryChat}</span>
+              </button>
+              <button
+                onClick={() => setShowChatHistory(current => !current)}
+                className={`flex min-w-0 items-center justify-center gap-1.5 rounded-lg border px-2 py-2 text-[11px] font-bold transition-colors ${
+                  showChatHistory
+                    ? 'border-primary bg-primary/10 text-primary'
+                    : 'border-zinc-200 text-zinc-600 hover:border-primary hover:text-primary dark:border-zinc-700 dark:text-zinc-300'
+                }`}
+                title={t.chatHistory}
+              >
+                <History size={15} />
+                <span className="truncate">{t.chatHistory}</span>
+              </button>
+            </div>
           </div>
+
+          <AnimatePresence>
+            {showChatHistory && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                exit={{ opacity: 0, height: 0 }}
+                className="shrink-0 overflow-hidden border-b border-zinc-100 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950/60"
+              >
+                <div className="max-h-52 space-y-1 overflow-y-auto p-3 custom-scrollbar">
+                  {chats.length > 0 ? chats
+                    .slice()
+                    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+                    .map(chat => (
+                      <div
+                        key={chat.id}
+                        className={`group flex items-center gap-2 rounded-lg border px-3 py-2 transition-colors ${
+                          !temporaryChat && chat.id === activeChatId
+                            ? 'border-primary/30 bg-primary/10'
+                            : 'border-transparent bg-white hover:border-zinc-200 dark:bg-zinc-900 dark:hover:border-zinc-700'
+                        }`}
+                      >
+                        <button
+                          onClick={() => openSavedChat(chat.id)}
+                          className="min-w-0 flex-1 text-start"
+                        >
+                          <span className="block truncate text-sm font-semibold text-zinc-800 dark:text-zinc-100">{chat.title}</span>
+                          <span className="mt-0.5 block text-[10px] text-zinc-400">
+                            {new Intl.DateTimeFormat(language === 'ar' ? 'ar-SA' : 'en-US', {
+                              month: 'short',
+                              day: 'numeric',
+                              hour: 'numeric',
+                              minute: '2-digit',
+                            }).format(new Date(chat.updatedAt))}
+                          </span>
+                        </button>
+                        <button
+                          onClick={() => deleteChat(chat.id)}
+                          className="shrink-0 p-1.5 text-zinc-400 opacity-100 transition-colors hover:text-red-500 sm:opacity-0 sm:group-hover:opacity-100"
+                          title={t.deleteChat}
+                          aria-label={t.deleteChat}
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+                    )) : (
+                    <p className="px-3 py-5 text-center text-xs text-zinc-400">{t.noChatHistory}</p>
+                  )}
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {temporaryChat && (
+            <div className="flex shrink-0 items-center justify-center gap-2 border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs font-medium text-amber-800 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-200">
+              <ShieldCheck size={14} />
+              {t.temporaryChatNotice}
+            </div>
+          )}
 
           <div 
             ref={scrollRef}
