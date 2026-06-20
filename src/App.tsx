@@ -34,10 +34,34 @@ import {
 import { Task, ChatMessage, ScheduledEvent, TrashedTask } from './types';
 import { parseScheduledEvent, scheduledEventTimestamp } from './dateParser';
 import CalendarPanel from './CalendarPanel';
-import { addDaysToKey, CalendarViewMode, toDateKey } from './calendarUtils';
+import { CalendarViewMode, toDateKey } from './calendarUtils';
+import { applyNewDayAction, NewDayAction } from './newDayUtils';
 
 type Language = 'ar' | 'en';
 type AppSection = 'dashboard' | 'trash';
+
+function normalizeTaskTime(time?: string) {
+  if (!time) return null;
+  const normalized = time.trim().toLowerCase();
+  const match = normalized.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm|ص|م)?/);
+  if (!match) return null;
+
+  let hour = Number(match[1]);
+  const minute = Number(match[2] || 0);
+  const marker = match[3];
+
+  if ((marker === 'pm' || marker === 'م') && hour < 12) hour += 12;
+  if ((marker === 'am' || marker === 'ص') && hour === 12) hour = 0;
+  if (hour > 23 || minute > 59) return null;
+
+  return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+}
+
+function taskTimestamp(task: Task) {
+  const time = normalizeTaskTime(task.time);
+  if (!time) return null;
+  return new Date(`${task.date}T${time}:00`).getTime();
+}
 
 interface SpeechRecognitionResultEvent {
   results: ArrayLike<{
@@ -127,13 +151,24 @@ const translations = {
     undo: 'تراجع',
     newDay: 'يوم جديد',
     newDayConfirmTitle: 'بدء يوم جديد',
-    newDayConfirm: 'سيتم أرشفة مهام اليوم المكتملة. ماذا تريد أن تفعل بالمهام غير المكتملة؟',
-    moveToTomorrow: 'نقل غير المكتمل إلى الغد',
-    keepOnToday: 'إبقاؤها في تاريخ اليوم',
+    newDayConfirm: 'اختر المهام غير المكتملة التي تريد التعامل معها. سيتم أرشفة المهام المكتملة لهذا اليوم.',
+    moveToTomorrow: 'نقل المهام المحددة إلى الغد',
+    keepOnToday: 'إبقاء المهام المحددة في هذا اليوم',
+    archiveCompletedOnly: 'أرشفة المهام المكتملة فقط',
+    selectAll: 'تحديد الكل',
+    noIncompleteTasks: 'لا توجد مهام غير مكتملة في هذا اليوم.',
     cancel: 'إلغاء',
     archivedMessage: 'تم أرشفة المهام المكتملة وبدء يوم جديد.',
+    newDayResult: (archived: number, moved: number) => `تم أرشفة ${archived} ونقل ${moved} من المهام إلى الغد.`,
     archivedTasks: 'المهام المؤرشفة',
     noTasksForDay: 'لا توجد مهام لهذا اليوم.',
+    taskReminderNeedsTime: 'فضلاً أضف وقتًا للمهمة لتفعيل التذكير.',
+    addTime: 'إضافة وقت',
+    editTaskTime: 'تحديد تاريخ ووقت المهمة',
+    taskDate: 'التاريخ',
+    taskTime: 'الوقت',
+    save: 'حفظ',
+    timeNote: 'ملاحظة الوقت',
     categories: {
       work: 'عمل',
       personal: 'شخصي',
@@ -204,13 +239,24 @@ const translations = {
     undo: 'Undo',
     newDay: 'Start New Day',
     newDayConfirmTitle: 'Start a new day',
-    newDayConfirm: 'Completed tasks for today will be archived. What should happen to incomplete tasks?',
-    moveToTomorrow: 'Move incomplete tasks to tomorrow',
-    keepOnToday: 'Keep them on today',
+    newDayConfirm: 'Select the unfinished tasks you want to manage. Completed tasks for this day will be archived.',
+    moveToTomorrow: 'Move selected tasks to tomorrow',
+    keepOnToday: 'Keep selected tasks on this day',
+    archiveCompletedOnly: 'Archive completed tasks only',
+    selectAll: 'Select all',
+    noIncompleteTasks: 'There are no unfinished tasks for this day.',
     cancel: 'Cancel',
     archivedMessage: 'Completed tasks were archived and a new day was started.',
+    newDayResult: (archived: number, moved: number) => `Archived ${archived} task${archived === 1 ? '' : 's'} and moved ${moved} to tomorrow.`,
     archivedTasks: 'Archived tasks',
     noTasksForDay: 'No tasks for this day.',
+    taskReminderNeedsTime: 'Please add a time to enable reminders.',
+    addTime: 'Add time',
+    editTaskTime: 'Set task date and time',
+    taskDate: 'Date',
+    taskTime: 'Time',
+    save: 'Save',
+    timeNote: 'Time note',
     categories: {
       work: 'Work',
       personal: 'Personal',
@@ -237,15 +283,35 @@ export default function App() {
     return storedTasks.map(task => ({
       ...task,
       date: task.date || todayKey,
+      time: normalizeTaskTime(task.time) || undefined,
+      timeNote: normalizeTaskTime(task.time) ? task.timeNote : task.timeNote || task.time,
+      reminderMinutes: task.reminderMinutes ?? null,
+      reminderNotifiedAt: task.reminderNotifiedAt ?? null,
     })) as Task[];
   });
   const [trashedTasks, setTrashedTasks] = useState<TrashedTask[]>(() => {
     const saved = localStorage.getItem('trashed_tasks');
-    return saved ? JSON.parse(saved) : [];
+    const storedTasks = saved ? JSON.parse(saved) as Array<Partial<TrashedTask>> : [];
+    return storedTasks.map(task => ({
+      ...task,
+      date: task.date || todayKey,
+      time: normalizeTaskTime(task.time) || undefined,
+      timeNote: normalizeTaskTime(task.time) ? task.timeNote : task.timeNote || task.time,
+      reminderMinutes: task.reminderMinutes ?? null,
+      reminderNotifiedAt: task.reminderNotifiedAt ?? null,
+    })) as TrashedTask[];
   });
   const [archivedTasks, setArchivedTasks] = useState<Task[]>(() => {
     const saved = localStorage.getItem('archived_tasks');
-    return saved ? JSON.parse(saved) : [];
+    const storedTasks = saved ? JSON.parse(saved) as Array<Partial<Task>> : [];
+    return storedTasks.map(task => ({
+      ...task,
+      date: task.date || todayKey,
+      time: normalizeTaskTime(task.time) || undefined,
+      timeNote: normalizeTaskTime(task.time) ? task.timeNote : task.timeNote || task.time,
+      reminderMinutes: task.reminderMinutes ?? null,
+      reminderNotifiedAt: task.reminderNotifiedAt ?? null,
+    })) as Task[];
   });
   const [scheduledEvents, setScheduledEvents] = useState<ScheduledEvent[]>(() => {
     const saved = localStorage.getItem('scheduled_events');
@@ -273,7 +339,12 @@ export default function App() {
   const [notificationMessage, setNotificationMessage] = useState('');
   const [reminderToast, setReminderToast] = useState('');
   const [undoTask, setUndoTask] = useState<TrashedTask | null>(null);
+  const [newDayToast, setNewDayToast] = useState('');
   const [showNewDayModal, setShowNewDayModal] = useState(false);
+  const [selectedNewDayTaskIds, setSelectedNewDayTaskIds] = useState<string[]>([]);
+  const [editingTaskTimeId, setEditingTaskTimeId] = useState<string | null>(null);
+  const [taskTimeDate, setTaskTimeDate] = useState(todayKey);
+  const [taskTimeValue, setTaskTimeValue] = useState('');
   const [activeSection, setActiveSection] = useState<AppSection>('dashboard');
   const [calendarView, setCalendarView] = useState<CalendarViewMode>('week');
   const [selectedDate, setSelectedDate] = useState(todayKey);
@@ -329,35 +400,55 @@ export default function App() {
         const reminderTime = eventTime - event.reminderMinutes * 60 * 1000;
         return now >= reminderTime && now <= eventTime + 60 * 1000;
       });
+      const dueTasks = tasks.filter(task => {
+        const eventTime = taskTimestamp(task);
+        if (
+          task.completed ||
+          eventTime === null ||
+          task.reminderMinutes === null ||
+          task.reminderNotifiedAt
+        ) {
+          return false;
+        }
 
-      if (dueEvents.length === 0) return;
+        const reminderTime = eventTime - task.reminderMinutes * 60 * 1000;
+        return now >= reminderTime && now <= eventTime + 60 * 1000;
+      });
 
-      const notifiedIds = new Set(dueEvents.map(event => event.id));
+      if (dueEvents.length === 0 && dueTasks.length === 0) return;
+
+      const notifiedEventIds = new Set(dueEvents.map(event => event.id));
+      const notifiedTaskIds = new Set(dueTasks.map(task => task.id));
       const notifiedAt = new Date().toISOString();
 
-      dueEvents.forEach(event => {
-        const message = t.reminderDue(event.title);
+      [...dueEvents, ...dueTasks].forEach(item => {
+        const message = t.reminderDue(item.title);
         setReminderToast(message);
 
         if ('Notification' in window && Notification.permission === 'granted') {
           new Notification(t.reminderTitle, {
             body: message,
-            tag: `scheduled-event-${event.id}`,
+            tag: `scheduled-item-${item.id}`,
           });
         }
       });
 
       setScheduledEvents(current => current.map(event =>
-        notifiedIds.has(event.id)
+        notifiedEventIds.has(event.id)
           ? { ...event, reminderNotifiedAt: notifiedAt }
           : event
+      ));
+      setTasks(current => current.map(task =>
+        notifiedTaskIds.has(task.id)
+          ? { ...task, reminderNotifiedAt: notifiedAt }
+          : task
       ));
     };
 
     checkReminders();
     const intervalId = window.setInterval(checkReminders, 15_000);
     return () => window.clearInterval(intervalId);
-  }, [scheduledEvents, t]);
+  }, [scheduledEvents, tasks, t]);
 
   useEffect(() => {
     if (!reminderToast) return;
@@ -370,6 +461,12 @@ export default function App() {
     const timeoutId = window.setTimeout(() => setUndoTask(null), 6_000);
     return () => window.clearTimeout(timeoutId);
   }, [undoTask]);
+
+  useEffect(() => {
+    if (!newDayToast) return;
+    const timeoutId = window.setTimeout(() => setNewDayToast(''), 6_000);
+    return () => window.clearTimeout(timeoutId);
+  }, [newDayToast]);
 
   useEffect(() => {
     const textarea = textareaRef.current;
@@ -422,7 +519,11 @@ export default function App() {
       if (data.tasks && data.tasks.length > 0) {
         setPendingTasks(data.tasks.map((task: Task) => ({
           ...task,
+          time: normalizeTaskTime(task.time) || undefined,
+          timeNote: normalizeTaskTime(task.time) ? task.timeNote : task.timeNote || task.time,
           date: detectedEvent?.date || selectedDate,
+          reminderMinutes: task.reminderMinutes ?? null,
+          reminderNotifiedAt: task.reminderNotifiedAt ?? null,
         })));
       } else {
         setPendingTasks([]);
@@ -462,23 +563,28 @@ export default function App() {
     }]);
   };
 
-  const startNewDay = (moveIncomplete: boolean) => {
-    const tomorrow = addDaysToKey(todayKey, 1);
-    const completedToday = tasks.filter(task => task.date === todayKey && task.completed);
+  const openNewDayModal = () => {
+    const incompleteIds = tasks
+      .filter(task => task.date === selectedDate && !task.completed)
+      .map(task => task.id);
+    setSelectedNewDayTaskIds(incompleteIds);
+    setShowNewDayModal(true);
+  };
+
+  const finishSelectedDay = (action: NewDayAction) => {
+    const sourceDate = selectedDate;
+    const result = applyNewDayAction(tasks, sourceDate, selectedNewDayTaskIds, action);
 
     setArchivedTasks(prev => [
-      ...completedToday.map(task => ({ ...task, archivedAt: new Date().toISOString() })),
+      ...result.archivedTasks,
       ...prev,
     ]);
-    setTasks(prev => prev
-      .filter(task => !(task.date === todayKey && task.completed))
-      .map(task => task.date === todayKey && !task.completed && moveIncomplete
-        ? { ...task, date: tomorrow }
-        : task
-      ));
-    setMessages(prev => [...prev, { role: 'assistant', content: t.archivedMessage }]);
+    setTasks(result.activeTasks);
+    const resultMessage = t.newDayResult(result.archivedTasks.length, result.movedCount);
+    setMessages(prev => [...prev, { role: 'assistant', content: resultMessage }]);
+    setNewDayToast(resultMessage);
     setPendingTasks([]);
-    setSelectedDate(moveIncomplete ? tomorrow : todayKey);
+    setSelectedNewDayTaskIds([]);
     setShowNewDayModal(false);
   };
 
@@ -561,6 +667,67 @@ export default function App() {
 
     const permission = await Notification.requestPermission();
     setNotificationMessage(permission === 'denied' ? t.notificationsDenied : '');
+  };
+
+  const updateTaskReminder = async (task: Task, value: string) => {
+    const reminderMinutes = value === '' ? null : Number(value);
+
+    if (reminderMinutes !== null && taskTimestamp(task) === null) {
+      setNotificationMessage(t.taskReminderNeedsTime);
+      return;
+    }
+
+    setTasks(prev => prev.map(item =>
+      item.id === task.id
+        ? { ...item, reminderMinutes, reminderNotifiedAt: null }
+        : item
+    ));
+
+    if (reminderMinutes === null) {
+      setNotificationMessage('');
+      return;
+    }
+
+    if (!('Notification' in window)) {
+      setNotificationMessage(t.notificationsUnsupported);
+      return;
+    }
+
+    if (Notification.permission === 'granted') {
+      setNotificationMessage('');
+      return;
+    }
+
+    const permission = await Notification.requestPermission();
+    setNotificationMessage(permission === 'denied' ? t.notificationsDenied : '');
+  };
+
+  const openTaskTimeEditor = (task: Task) => {
+    setEditingTaskTimeId(task.id);
+    setTaskTimeDate(task.date);
+    setTaskTimeValue(normalizeTaskTime(task.time) || '');
+  };
+
+  const closeTaskTimeEditor = () => {
+    setEditingTaskTimeId(null);
+    setTaskTimeValue('');
+  };
+
+  const saveTaskTime = () => {
+    if (!editingTaskTimeId || !taskTimeDate || !taskTimeValue) return;
+    setTasks(prev => prev.map(task =>
+      task.id === editingTaskTimeId
+        ? {
+            ...task,
+            date: taskTimeDate,
+            time: taskTimeValue,
+            reminderNotifiedAt: null,
+          }
+        : task
+    ));
+    setSelectedDate(taskTimeDate);
+    closeTaskTimeEditor();
+    setNotificationMessage('');
   };
 
   const clearSpeechTimeout = () => {
@@ -684,11 +851,11 @@ export default function App() {
 
   const pendingList = tasks.filter(task => task.date === selectedDate && !task.completed);
   const completedList = tasks.filter(task => task.date === selectedDate && task.completed);
+  const newDayIncompleteTasks = tasks.filter(task => task.date === selectedDate && !task.completed);
   const upcomingEvents = scheduledEvents
     .filter(event =>
       event.status === 'upcoming' &&
-      event.date === selectedDate &&
-      scheduledEventTimestamp(event) >= Date.now()
+      event.date === selectedDate
     )
     .sort((a, b) => scheduledEventTimestamp(a) - scheduledEventTimestamp(b));
   const todayTaskCount = tasks.filter(task => task.date === todayKey && !task.completed).length;
@@ -805,7 +972,7 @@ export default function App() {
                   <p className="text-zinc-500 text-lg dark:text-zinc-400">{t.todaySummary(todayTaskCount, todayEventCount)}</p>
                 </div>
                 <button
-                  onClick={() => setShowNewDayModal(true)}
+                  onClick={openNewDayModal}
                   className="flex items-center gap-2 rounded-lg bg-zinc-900 px-4 py-3 text-sm font-bold text-white transition-colors hover:bg-zinc-700 dark:bg-white dark:text-zinc-950 dark:hover:bg-zinc-200"
                 >
                   <CalendarPlus size={18} />
@@ -940,6 +1107,43 @@ export default function App() {
                           <span className="text-xs text-red-500 font-bold bg-red-50 px-2 py-0.5 rounded border border-red-100 dark:bg-red-500/10 dark:border-red-500/20 dark:text-red-300">{t.highPriority}</span>
                         )}
                       </div>
+                      {task.timeNote && (
+                        <p className="mt-2 break-words text-xs text-zinc-500 dark:text-zinc-400">
+                          <span className="font-semibold">{t.timeNote}:</span> {task.timeNote}
+                        </p>
+                      )}
+                      <div className="mt-3 flex max-w-sm flex-wrap items-end gap-2">
+                        <label className="min-w-44 flex-1">
+                          <span className="mb-1 block text-[11px] font-semibold text-zinc-500 dark:text-zinc-400">
+                            {t.reminder}
+                          </span>
+                          <select
+                            value={task.reminderMinutes === null ? '' : String(task.reminderMinutes)}
+                            onChange={event => void updateTaskReminder(task, event.target.value)}
+                            disabled={taskTimestamp(task) === null}
+                            className="w-full rounded-md border border-zinc-200 bg-zinc-50 px-2.5 py-2 text-xs text-zinc-700 outline-none transition-colors focus:border-primary disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200"
+                          >
+                            {reminderOptions.map(option => (
+                              <option key={option.value} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        {taskTimestamp(task) === null && (
+                          <button
+                            onClick={() => openTaskTimeEditor(task)}
+                            className="shrink-0 rounded-md bg-primary/10 px-3 py-2 text-xs font-bold text-primary transition-colors hover:bg-primary/15"
+                          >
+                            {t.addTime}
+                          </button>
+                        )}
+                      </div>
+                      {taskTimestamp(task) === null && (
+                        <p className="mt-1.5 text-[11px] text-amber-600 dark:text-amber-300">
+                          {t.taskReminderNeedsTime}
+                        </p>
+                      )}
                     </div>
                     <button 
                       onClick={() => deleteTask(task.id)}
@@ -1118,8 +1322,8 @@ export default function App() {
             })}
           </div>
 
-          <div className="p-6 bg-white border-t border-zinc-100 transition-colors dark:bg-zinc-900 dark:border-zinc-800">
-            <div className="flex items-end gap-2">
+          <div className="p-4 sm:p-6 bg-white border-t border-zinc-100 transition-colors dark:bg-zinc-900 dark:border-zinc-800">
+            <div className="flex w-full items-end gap-2.5 sm:gap-3">
               <button
                 onClick={toggleListening}
                 disabled={isLoading}
@@ -1133,7 +1337,7 @@ export default function App() {
               >
                 <Mic size={20} className={isListening ? 'animate-pulse' : ''} />
               </button>
-              <div className="relative group min-w-0 flex-1">
+              <div className="group min-w-0 flex-1">
                 <textarea
                   ref={textareaRef}
                   rows={1}
@@ -1147,17 +1351,17 @@ export default function App() {
                   }}
                   placeholder={t.placeholder}
                   dir={language === 'ar' ? 'rtl' : 'ltr'}
-                  className={`max-h-36 min-h-12 w-full resize-none overflow-y-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere] bg-zinc-50 border border-zinc-200 rounded-[24px] py-3.5 focus:outline-none focus:ring-4 focus:ring-primary/5 focus:border-primary transition-all text-sm leading-6 group-hover:bg-white dark:bg-zinc-950 dark:border-zinc-800 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:group-hover:bg-zinc-950 ${language === 'ar' ? 'pr-5 pl-14 text-right' : 'pl-5 pr-14 text-left'}`}
+                  className={`block max-h-36 min-h-12 w-full resize-none overflow-y-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere] rounded-[24px] border border-zinc-200 bg-zinc-50 px-5 py-3 focus:border-primary focus:outline-none focus:ring-4 focus:ring-primary/5 transition-all text-sm leading-6 group-hover:bg-white dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:group-hover:bg-zinc-950 ${language === 'ar' ? 'text-right' : 'text-left'}`}
                 />
-                <button
-                  onClick={handleSend}
-                  disabled={isLoading || !inputValue.trim() || isListening}
-                  className={`absolute bottom-1.5 p-3 bg-primary text-white rounded-full hover:scale-105 active:scale-95 disabled:opacity-30 disabled:hover:scale-100 transition-all shadow-md shadow-primary/20 ${language === 'ar' ? 'left-2' : 'right-2'}`}
-                  aria-label={language === 'ar' ? 'إرسال' : 'Send'}
-                >
-                  <Send size={20} />
-                </button>
               </div>
+              <button
+                onClick={handleSend}
+                disabled={isLoading || !inputValue.trim() || isListening}
+                className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-primary text-white shadow-md shadow-primary/20 transition-all hover:scale-105 active:scale-95 disabled:opacity-30 disabled:hover:scale-100"
+                aria-label={language === 'ar' ? 'إرسال' : 'Send'}
+              >
+                <Send size={20} />
+              </button>
             </div>
             {isListening && (
               <div className="mt-3 flex items-center justify-center gap-2 text-xs font-semibold text-red-500">
@@ -1224,6 +1428,29 @@ export default function App() {
         )}
       </AnimatePresence>
       <AnimatePresence>
+        {newDayToast && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 12 }}
+            className={`fixed bottom-20 z-50 flex max-w-[calc(100vw-2rem)] items-center gap-3 rounded-lg border border-zinc-200 bg-white px-4 py-3 shadow-xl shadow-black/10 dark:border-zinc-700 dark:bg-zinc-800 ${
+              language === 'ar' ? 'right-5' : 'left-5'
+            }`}
+            role="status"
+          >
+            <CalendarPlus className="shrink-0 text-primary" size={18} />
+            <span className="text-sm font-medium text-zinc-800 dark:text-zinc-100">{newDayToast}</span>
+            <button
+              onClick={() => setNewDayToast('')}
+              className="shrink-0 p-1 text-zinc-400 hover:text-zinc-800 dark:hover:text-zinc-100"
+              aria-label={t.dismiss}
+            >
+              <X size={16} />
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+      <AnimatePresence>
         {showNewDayModal && (
           <motion.div
             initial={{ opacity: 0 }}
@@ -1245,30 +1472,154 @@ export default function App() {
                   <p className="mt-2 text-sm leading-6 text-zinc-500 dark:text-zinc-400">{t.newDayConfirm}</p>
                 </div>
                 <button
-                  onClick={() => setShowNewDayModal(false)}
+                  onClick={() => {
+                    setShowNewDayModal(false);
+                    setSelectedNewDayTaskIds([]);
+                  }}
                   className="p-1 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200"
                   aria-label={t.cancel}
                 >
                   <X size={20} />
                 </button>
               </div>
+              <div className="mt-5 max-h-64 space-y-2 overflow-y-auto pe-1 custom-scrollbar">
+                {newDayIncompleteTasks.length > 0 ? (
+                  <>
+                    <label className="mb-3 flex cursor-pointer items-center gap-3 rounded-lg bg-zinc-100 px-3 py-2.5 text-sm font-semibold text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">
+                      <input
+                        type="checkbox"
+                        checked={selectedNewDayTaskIds.length === newDayIncompleteTasks.length}
+                        onChange={event => setSelectedNewDayTaskIds(
+                          event.target.checked ? newDayIncompleteTasks.map(task => task.id) : []
+                        )}
+                        className="h-4 w-4 accent-primary"
+                      />
+                      {t.selectAll}
+                    </label>
+                    {newDayIncompleteTasks.map(task => (
+                      <label
+                        key={task.id}
+                        className="flex cursor-pointer items-start gap-3 rounded-lg border border-zinc-200 px-3 py-3 transition-colors hover:border-primary/50 dark:border-zinc-700"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selectedNewDayTaskIds.includes(task.id)}
+                          onChange={event => setSelectedNewDayTaskIds(current =>
+                            event.target.checked
+                              ? [...current, task.id]
+                              : current.filter(id => id !== task.id)
+                          )}
+                          className="mt-0.5 h-4 w-4 shrink-0 accent-primary"
+                        />
+                        <span className="min-w-0">
+                          <span className="block break-words text-sm font-semibold text-zinc-800 dark:text-zinc-100">{task.title}</span>
+                          {task.time && (
+                            <span className="mt-1 block text-xs text-zinc-400">{task.time}</span>
+                          )}
+                        </span>
+                      </label>
+                    ))}
+                  </>
+                ) : (
+                  <p className="rounded-lg bg-zinc-100 px-4 py-4 text-sm text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
+                    {t.noIncompleteTasks}
+                  </p>
+                )}
+              </div>
               <div className="mt-6 grid gap-2">
                 <button
-                  onClick={() => startNewDay(true)}
-                  className="flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-3 text-sm font-bold text-white hover:bg-primary/90"
+                  onClick={() => finishSelectedDay('move')}
+                  disabled={selectedNewDayTaskIds.length === 0}
+                  className="flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-3 text-sm font-bold text-white hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   <CalendarPlus size={17} />
                   {t.moveToTomorrow}
                 </button>
                 <button
-                  onClick={() => startNewDay(false)}
-                  className="rounded-lg bg-zinc-100 px-4 py-3 text-sm font-bold text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
+                  onClick={() => finishSelectedDay('keep')}
+                  disabled={selectedNewDayTaskIds.length === 0}
+                  className="rounded-lg bg-zinc-100 px-4 py-3 text-sm font-bold text-zinc-700 hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
                 >
                   {t.keepOnToday}
                 </button>
                 <button
-                  onClick={() => setShowNewDayModal(false)}
+                  onClick={() => finishSelectedDay('archive-only')}
+                  className="flex items-center justify-center gap-2 rounded-lg border border-zinc-200 px-4 py-3 text-sm font-bold text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                >
+                  <Archive size={17} />
+                  {t.archiveCompletedOnly}
+                </button>
+                <button
+                  onClick={() => {
+                    setShowNewDayModal(false);
+                    setSelectedNewDayTaskIds([]);
+                  }}
                   className="px-4 py-2 text-sm font-medium text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100"
+                >
+                  {t.cancel}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+      <AnimatePresence>
+        {editingTaskTimeId && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[70] flex items-center justify-center bg-black/45 p-4 backdrop-blur-sm"
+            role="dialog"
+            aria-modal="true"
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 14, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 10, scale: 0.98 }}
+              className="w-full max-w-sm rounded-lg border border-zinc-200 bg-white p-5 shadow-2xl dark:border-zinc-700 dark:bg-zinc-900"
+            >
+              <div className="flex items-start justify-between gap-4">
+                <h2 className="text-lg font-bold text-zinc-900 dark:text-white">{t.editTaskTime}</h2>
+                <button
+                  onClick={closeTaskTimeEditor}
+                  className="p-1 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200"
+                  aria-label={t.cancel}
+                >
+                  <X size={19} />
+                </button>
+              </div>
+              <div className="mt-5 grid gap-4">
+                <label>
+                  <span className="mb-1.5 block text-xs font-semibold text-zinc-500 dark:text-zinc-400">{t.taskDate}</span>
+                  <input
+                    type="date"
+                    value={taskTimeDate}
+                    onChange={event => setTaskTimeDate(event.target.value)}
+                    className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2.5 text-sm text-zinc-800 outline-none focus:border-primary dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                  />
+                </label>
+                <label>
+                  <span className="mb-1.5 block text-xs font-semibold text-zinc-500 dark:text-zinc-400">{t.taskTime}</span>
+                  <input
+                    type="time"
+                    value={taskTimeValue}
+                    onChange={event => setTaskTimeValue(event.target.value)}
+                    className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2.5 text-sm text-zinc-800 outline-none focus:border-primary dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                  />
+                </label>
+              </div>
+              <div className="mt-6 flex gap-2">
+                <button
+                  onClick={saveTaskTime}
+                  disabled={!taskTimeDate || !taskTimeValue}
+                  className="flex-1 rounded-lg bg-primary px-4 py-3 text-sm font-bold text-white hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {t.save}
+                </button>
+                <button
+                  onClick={closeTaskTimeEditor}
+                  className="rounded-lg bg-zinc-100 px-4 py-3 text-sm font-bold text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700"
                 >
                   {t.cancel}
                 </button>

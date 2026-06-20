@@ -4,7 +4,10 @@ export interface Task {
   category: "work" | "personal" | "health" | "social" | "other";
   priority: "low" | "medium" | "high";
   time?: string;
+  timeNote?: string;
   date: string;
+  reminderMinutes: number | null;
+  reminderNotifiedAt: string | null;
   completed: boolean;
   createdAt: string;
   archivedAt?: string;
