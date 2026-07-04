@@ -16,6 +16,17 @@ function cleanTranscript(value) {
     .trim();
 }
 
+function isGeminiQuotaError(error) {
+  if (!error || typeof error !== "object") return false;
+  const status = error.status ?? error.statusCode ?? error.code ?? error.error?.code;
+  const message = [
+    error.message,
+    error.error?.message,
+    error.error?.status,
+  ].filter(value => typeof value === "string").join(" ");
+  return Number(status) === 429 || /429|quota|resource_exhausted/i.test(message);
+}
+
 async function readAudioBody(req) {
   if (Buffer.isBuffer(req.body)) return req.body;
   if (req.body instanceof Uint8Array) return Buffer.from(req.body);
@@ -84,6 +95,9 @@ export default async function handler(req, res) {
     return res.status(200).json({ text });
   } catch (error) {
     console.error("Audio transcription error:", error);
+    if (isGeminiQuotaError(error)) {
+      return res.status(429).json({ error: "quota_exceeded" });
+    }
     return res.status(500).json({ error: "Failed to transcribe audio" });
   }
 }

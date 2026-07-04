@@ -48,8 +48,67 @@ type AppSection = 'dashboard' | 'trash';
 type MobileView = 'chat' | 'tasks' | 'calendar' | 'more';
 type VoiceState = 'idle' | 'listening' | 'recording' | 'processing' | 'error';
 
+const MAX_AI_CALLS_PER_HOUR = 10;
+const AI_USAGE_KEY = 'ai_usage_timestamps';
+const AUDIO_TRANSCRIPT_CACHE_KEY = 'audio_transcript_cache';
+const PARSE_RESULT_CACHE_KEY = 'parse_result_cache';
+
+interface AudioTranscriptCacheEntry {
+  hash: string;
+  text: string;
+  createdAt: number;
+}
+
+interface ParseResultCacheEntry {
+  reply?: string;
+  tasks?: unknown;
+  createdAt: number;
+}
+
 function safeMessageText(value: unknown) {
   return typeof value === 'string' ? value : '';
+}
+
+function readJsonStorage<T>(key: string, fallback: T): T {
+  try {
+    const saved = localStorage.getItem(key);
+    return saved ? JSON.parse(saved) as T : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function consumeAiCall() {
+  const now = Date.now();
+  const recent = readJsonStorage<number[]>(AI_USAGE_KEY, [])
+    .filter(timestamp => Number.isFinite(timestamp) && now - timestamp < 60 * 60 * 1000);
+  if (recent.length >= MAX_AI_CALLS_PER_HOUR) {
+    localStorage.setItem(AI_USAGE_KEY, JSON.stringify(recent));
+    return false;
+  }
+  localStorage.setItem(AI_USAGE_KEY, JSON.stringify([...recent, now]));
+  return true;
+}
+
+function normalizeCacheText(value: string) {
+  return value.trim().toLocaleLowerCase().replace(/\s+/g, ' ');
+}
+
+async function hashAudioBlob(audio: Blob) {
+  const bytes = await audio.arrayBuffer();
+  if (globalThis.crypto?.subtle) {
+    const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes);
+    return Array.from(new Uint8Array(digest))
+      .map(byte => byte.toString(16).padStart(2, '0'))
+      .join('');
+  }
+
+  let hash = 2166136261;
+  for (const byte of new Uint8Array(bytes)) {
+    hash ^= byte;
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${audio.size}-${(hash >>> 0).toString(16)}`;
 }
 
 function cleanAssistantMessage(content: unknown, language: Language) {
@@ -207,10 +266,12 @@ const translations = {
     completeEvent: 'إكمال الموعد',
     deleteEvent: 'حذف الموعد',
     listening: 'جاري الاستماع...',
-    recording: 'جاري التسجيل... اضغط إيقاف لما تخلص',
-    processingVoice: 'جاري معالجة الصوت...',
+    recording: 'جاري التسجيل...',
+    processingVoice: 'جاري تحويل الصوت...',
     cancelRecording: 'إلغاء التسجيل',
     safariVoiceHint: 'اضغط تسجيل، تكلم، ثم اضغط إيقاف.',
+    recordLonger: 'اضغط وسجل كلامك، ثم اضغط إيقاف.',
+    voiceReady: 'النص جاهز، راجعه ثم اعتمد الخطة',
     startListening: 'ابدأ الإدخال الصوتي',
     stopListening: 'إيقاف الاستماع',
     speechUnsupported: 'المتصفح لا يدعم الإدخال الصوتي. جرّب Google Chrome.',
@@ -281,7 +342,8 @@ const translations = {
     manualReminderNeedsTime: 'يجب إضافة وقت صالح عند اختيار تذكير.',
     offlineNotice: 'أنت غير متصل، سيتم حفظ المهام على جهازك.',
     chatFallback: 'حدث خطأ في المحادثة، لكن يمكنك إضافة المهمة يدويًا.',
-    quotaReached: 'وصلنا للحد المجاني مؤقتًا، جرّب بعد شوي أو أضف المهمة يدويًا.',
+    quotaReached: 'وصلنا للحد المجاني مؤقتًا، النص محفوظ وتقدر تضيفه يدويًا أو تجرب بعد شوي.',
+    usageLimitReached: 'وصلت لحد الاستخدام المؤقت، جرّب بعد ساعة أو أضف المهمة يدويًا.',
     voiceFallback: 'ما اشتغل المايك، تقدر تكتب المهمة.',
     addFromText: 'إضافة من النص',
     taskSaved: 'تم حفظ المهمة على جهازك.',
@@ -329,10 +391,12 @@ const translations = {
     completeEvent: 'Complete event',
     deleteEvent: 'Delete event',
     listening: 'Listening...',
-    recording: "Recording... tap stop when you're done",
-    processingVoice: 'Processing voice...',
+    recording: 'Recording...',
+    processingVoice: 'Converting voice...',
     cancelRecording: 'Cancel recording',
     safariVoiceHint: 'Tap record, speak, then stop.',
+    recordLonger: 'Record your voice, then tap stop.',
+    voiceReady: 'Text is ready. Review it, then approve the plan.',
     startListening: 'Start voice input',
     stopListening: 'Stop listening',
     speechUnsupported: 'This browser does not support voice input. Please try Google Chrome.',
@@ -403,7 +467,8 @@ const translations = {
     manualReminderNeedsTime: 'A valid time is required when a reminder is selected.',
     offlineNotice: 'You are offline. Tasks will be saved on this device.',
     chatFallback: 'Chat processing failed, but you can add the task manually.',
-    quotaReached: 'Temporary API limit reached. Try again later or add the task manually.',
+    quotaReached: 'Temporary free limit reached. Your text is saved; try later or add it manually.',
+    usageLimitReached: 'Temporary usage limit reached. Try again in an hour or add the task manually.',
     voiceFallback: 'Mic did not work. You can type the task.',
     addFromText: 'Add from text',
     taskSaved: 'Task saved on this device.',
@@ -516,6 +581,7 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [voiceState, setVoiceState] = useState<VoiceState>('idle');
+  const [voiceTextReady, setVoiceTextReady] = useState(false);
   const [speechError, setSpeechError] = useState('');
   const [notificationMessage, setNotificationMessage] = useState('');
   const [reminderToast, setReminderToast] = useState('');
@@ -550,6 +616,7 @@ export default function App() {
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const recordingCancelledRef = useRef(false);
+  const recordingStartedAtRef = useRef(0);
   const sendInFlightRef = useRef(false);
   const speechTimeoutRef = useRef<number | null>(null);
   const speechHandledRef = useRef(false);
@@ -911,6 +978,7 @@ export default function App() {
     if (!inputValue.trim() || isLoading || sendInFlightRef.current) return;
 
     const userMessage = inputValue;
+    const parseCacheKey = `${language}:${selectedDate}:${normalizeCacheText(userMessage)}`;
     const restoreInput = () => {
       setInputValue(current => {
         const existing = current.trim();
@@ -938,6 +1006,7 @@ export default function App() {
     setInputValue('');
     setSpeechError('');
     setVoiceState('idle');
+    setVoiceTextReady(false);
     setChatFallbackText('');
     updateChatMessages(
       targetChatId,
@@ -948,35 +1017,71 @@ export default function App() {
     setIsLoading(true);
 
     try {
-      const res = await fetch('/api/parse-tasks', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: userMessage, language, selectedDate }),
-      });
-
-      const responseText = await res.text();
       let data: { reply?: string; tasks?: unknown; error?: string };
+      const parseCache = readJsonStorage<Record<string, ParseResultCacheEntry>>(
+        PARSE_RESULT_CACHE_KEY,
+        {},
+      );
+      const cachedResult = parseCache[parseCacheKey];
 
-      try {
-        data = JSON.parse(responseText);
-      } catch (error) {
-        console.error('Chat API returned invalid JSON:', error, responseText);
-        throw new Error('Invalid chat API response');
-      }
-
-      if (!res.ok) {
-        console.error('Chat API request failed:', res.status, data.error || responseText);
-        if (res.status === 429) {
+      if (cachedResult) {
+        data = {
+          reply: cachedResult.reply,
+          tasks: cachedResult.tasks,
+        };
+      } else {
+        if (!consumeAiCall()) {
           restoreInput();
           setPendingTasks([]);
           setChatFallbackText(userMessage);
           updateChatMessages(targetChatId, targetIsTemporary, prev => [...prev, {
             role: 'assistant',
-            content: t.quotaReached,
+            content: t.usageLimitReached,
           }]);
           return;
         }
-        throw new Error(data.error || `Chat API failed with status ${res.status}`);
+
+        const res = await fetch('/api/parse-tasks', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: userMessage, language, selectedDate }),
+        });
+
+        const responseText = await res.text();
+        try {
+          data = JSON.parse(responseText);
+        } catch (error) {
+          console.error('Chat API returned invalid JSON:', error, responseText);
+          throw new Error('Invalid chat API response');
+        }
+
+        if (!res.ok) {
+          console.error('Chat API request failed:', res.status, data.error || responseText);
+          if (res.status === 429) {
+            restoreInput();
+            setPendingTasks([]);
+            setChatFallbackText(userMessage);
+            updateChatMessages(targetChatId, targetIsTemporary, prev => [...prev, {
+              role: 'assistant',
+              content: t.quotaReached,
+            }]);
+            return;
+          }
+          throw new Error(data.error || `Chat API failed with status ${res.status}`);
+        }
+
+        const nextCache = {
+          ...parseCache,
+          [parseCacheKey]: {
+            reply: data.reply,
+            tasks: data.tasks,
+            createdAt: Date.now(),
+          },
+        };
+        const recentEntries = Object.entries(nextCache)
+          .sort(([, a], [, b]) => b.createdAt - a.createdAt)
+          .slice(0, 30);
+        localStorage.setItem(PARSE_RESULT_CACHE_KEY, JSON.stringify(Object.fromEntries(recentEntries)));
       }
 
       try {
@@ -989,7 +1094,7 @@ export default function App() {
 
             const normalizedTime = normalizeTaskTime(task.time);
             return {
-              id: task.id || globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2, 11),
+              id: globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2, 11),
               title: task.title,
               category: task.category || 'other',
               priority: task.priority || 'medium',
@@ -1286,6 +1391,27 @@ export default function App() {
     setSpeechError('');
 
     try {
+      const audioHash = await hashAudioBlob(audio);
+      const transcriptCache = readJsonStorage<AudioTranscriptCacheEntry[]>(
+        AUDIO_TRANSCRIPT_CACHE_KEY,
+        [],
+      );
+      const cachedTranscript = transcriptCache.find(entry => entry.hash === audioHash)?.text;
+      if (cachedTranscript) {
+        setInputValue(current => current.trim()
+          ? `${current.trim()} ${cachedTranscript}`
+          : cachedTranscript);
+        setVoiceTextReady(true);
+        setVoiceState('idle');
+        return;
+      }
+
+      if (!consumeAiCall()) {
+        setSpeechError(t.usageLimitReached);
+        setVoiceState('error');
+        return;
+      }
+
       const response = await fetch('/api/transcribe-audio', {
         method: 'POST',
         headers: {
@@ -1298,10 +1424,24 @@ export default function App() {
       const transcript = safeMessageText(data.text).trim();
 
       if (!response.ok || !transcript) {
+        if (response.status === 429) {
+          setSpeechError(t.quotaReached);
+          setVoiceState('error');
+          return;
+        }
         throw new Error(safeMessageText(data.error) || 'Audio transcription failed');
       }
 
+      const nextTranscriptCache = [
+        { hash: audioHash, text: transcript, createdAt: Date.now() },
+        ...transcriptCache.filter(entry => entry.hash !== audioHash),
+      ].slice(0, 20);
+      localStorage.setItem(
+        AUDIO_TRANSCRIPT_CACHE_KEY,
+        JSON.stringify(nextTranscriptCache),
+      );
       setInputValue(current => current.trim() ? `${current.trim()} ${transcript}` : transcript);
+      setVoiceTextReady(true);
       setVoiceState('idle');
     } catch (error) {
       console.error('Audio transcription failed:', error);
@@ -1346,11 +1486,13 @@ export default function App() {
         setVoiceState('error');
       };
       recorder.onstart = () => {
+        recordingStartedAtRef.current = Date.now();
         setVoiceState('recording');
         setSpeechError('');
       };
       recorder.onstop = () => {
         const wasCancelled = recordingCancelledRef.current;
+        const recordingDuration = Date.now() - recordingStartedAtRef.current;
         const chunks = audioChunksRef.current;
         const mimeType = recorder.mimeType || supportedType || 'application/octet-stream';
         audioChunksRef.current = [];
@@ -1359,6 +1501,12 @@ export default function App() {
 
         if (wasCancelled) {
           setVoiceState('idle');
+          return;
+        }
+
+        if (recordingDuration < 1_000) {
+          setSpeechError(t.recordLonger);
+          setVoiceState('error');
           return;
         }
 
@@ -1409,11 +1557,6 @@ export default function App() {
   const toggleListening = async () => {
     if (isListening || voiceState === 'recording') {
       stopVoiceInput();
-      return;
-    }
-
-    if (isSafariOrIOS) {
-      await startMediaRecording();
       return;
     }
 
@@ -1516,6 +1659,7 @@ export default function App() {
         setInputValue(current => current.trim() ? `${current.trim()} ${transcript}` : transcript);
         speechTranscriptRef.current = '';
         setSpeechError('');
+        setVoiceTextReady(true);
         setVoiceState('idle');
         return;
       }
@@ -2231,7 +2375,12 @@ export default function App() {
             {voiceState === 'error' && speechError && (
               <p className="mt-2 text-center text-xs font-medium text-red-500">{speechError}</p>
             )}
-            {isSafariOrIOS && voiceState === 'idle' && !speechError && (
+            {voiceTextReady && voiceState === 'idle' && (
+              <p className="mt-2 text-center text-xs font-medium text-emerald-600 dark:text-emerald-400">
+                {t.voiceReady}
+              </p>
+            )}
+            {isSafariOrIOS && voiceState === 'idle' && !speechError && !voiceTextReady && (
               <p className="mt-2 text-center text-[11px] text-zinc-400 dark:text-zinc-500">
                 {t.safariVoiceHint}
               </p>

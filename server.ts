@@ -54,6 +54,9 @@ app.post(
       return res.json({ text });
     } catch (error) {
       console.error("Audio transcription error:", error);
+      if (isGeminiQuotaError(error)) {
+        return res.status(429).json({ error: "quota_exceeded" });
+      }
       return res.status(500).json({
         error: process.env.GEMINI_API_KEY
           ? "Failed to transcribe audio"
