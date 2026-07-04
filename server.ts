@@ -1,8 +1,8 @@
 import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
-import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
+import { parseTasksWithGemini } from "./lib/taskParser";
 
 dotenv.config({ path: ".env.local" });
 dotenv.config();
@@ -12,84 +12,26 @@ const PORT = 3000;
 
 app.use(express.json());
 
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY || "",
-  httpOptions: {
-    headers: {
-      'User-Agent': 'aistudio-build',
-    }
-  }
-});
-
-// Prompt for parsing tasks
-const SYSTEM_INSTRUCTION = `أنت مساعد ذكي ومنظم للمهام. مهمتك هي مساعدة المستخدم في ترتيب يومه بطريقة ودودة وحوارية.
-عندما يرسل المستخدم رسالة عن مهامه:
-1. قم بتحليل المهام وتصنيفها.
-2. اقترح خطة عمل مرتبة للمستخدم.
-3. التزم بلهجة ودودة وداعمة وشجع المستخدم.
-4. يجب أن ينتهي ردك دائماً بكتلة JSON تحتوي على المهام المقترحة ليتمكن النظام من معالجتها.
-
-تنسيق الرد:
-نص حواري مشجع باللغة العربية، يليه كتلة JSON واحدة بالتنسيق التالي:
-{
-  "tasks": [
-    {
-      "title": "عنوان المهمة بالعربية",
-      "category": "work|personal|health|social|other",
-      "priority": "low|medium|high",
-      "time": "الوقت المقترح إن وجد"
-    }
-  ]
-}`;
-
 app.post("/api/parse-tasks", async (req, res) => {
-  const { message, language = "ar" } = req.body;
+  const { message, language = "ar" } = req.body || {};
 
-  if (!message) {
+  if (typeof message !== "string" || !message.trim()) {
     return res.status(400).json({ error: "Message is required" });
   }
 
   try {
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: message,
-      config: {
-        systemInstruction: `${SYSTEM_INSTRUCTION}
-
-لغة الرد المطلوبة: ${language === "en" ? "English" : "العربية"}.
-اكتب الرد وعناوين المهام باللغة المطلوبة، مع الحفاظ على قيم category وpriority بالإنجليزية كما هي في تنسيق JSON.`,
-      },
-    });
-
-    const text = response.text || "";
-    
-    // Extract JSON part
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    let tasks = [];
-    let cleanText = text;
-
-    if (jsonMatch) {
-      try {
-        const jsonData = JSON.parse(jsonMatch[0]);
-        tasks = jsonData.tasks || [];
-        cleanText = text.replace(jsonMatch[0], "").trim();
-      } catch (e) {
-        console.error("Failed to parse JSON from AI response", e);
-      }
-    }
-
-    res.json({
-      reply: cleanText || "تم استلام مهامك بنجاح!",
-      tasks: tasks.map((t: any) => ({
-        ...t,
-        id: Math.random().toString(36).substr(2, 9),
-        completed: false,
-        createdAt: new Date().toISOString()
-      }))
-    });
+    const result = await parseTasksWithGemini(
+      message.trim(),
+      language === "en" ? "en" : "ar",
+    );
+    res.json(result);
   } catch (error) {
     console.error("Gemini Error:", error);
-    res.status(500).json({ error: "Failed to process message" });
+    res.status(500).json({
+      error: process.env.GEMINI_API_KEY
+        ? "Failed to process message"
+        : "GEMINI_API_KEY is not configured",
+    });
   }
 });
 
