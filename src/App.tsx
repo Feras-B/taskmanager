@@ -18,7 +18,7 @@ import {
   Calendar, 
   Trash2, 
   MessageSquare, 
-  Sparkles,
+  ListChecks,
   LayoutDashboard,
   Bell,
   Moon,
@@ -34,7 +34,8 @@ import {
   History,
   ShieldCheck,
   Pencil,
-  Settings
+  Settings,
+  Square
 } from 'lucide-react';
 import { Task, ChatMessage, ChatConversation, ScheduledEvent, TrashedTask } from './types';
 import { parseScheduledEvent, scheduledEventTimestamp } from './dateParser';
@@ -45,6 +46,34 @@ import { applyNewDayAction, NewDayAction } from './newDayUtils';
 type Language = 'ar' | 'en';
 type AppSection = 'dashboard' | 'trash';
 type MobileView = 'chat' | 'tasks' | 'calendar' | 'more';
+type VoiceState = 'idle' | 'listening' | 'recording' | 'processing' | 'error';
+
+function safeMessageText(value: unknown) {
+  return typeof value === 'string' ? value : '';
+}
+
+function cleanAssistantMessage(content: unknown, language: Language) {
+  const safeText = safeMessageText(content);
+  if (!safeText) return '';
+
+  const cleaned = safeText
+    .replace(/```(?:json)?/gi, '')
+    .replace(/```/g, '')
+    .replace(/\{[\s\S]*\}/g, '')
+    .replace(/^\s*["']+|["']+\s*$/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+
+  if (language === 'ar' && cleaned.startsWith('أهلاً بك!')) {
+    return 'هلا! وش تبغى ترتب؟';
+  }
+
+  if (cleaned) {
+    const firstSentence = cleaned.match(/^(.{1,180}?[.!؟])(?:\s|$)/)?.[1];
+    return firstSentence || (cleaned.length > 180 ? `${cleaned.slice(0, 177).trim()}...` : cleaned);
+  }
+  return language === 'ar' ? 'تمام، وش تبغى ترتب؟' : 'Sure, what would you like to organize?';
+}
 
 function createChat(language: Language, isTemporary: boolean): ChatConversation {
   const now = new Date().toISOString();
@@ -54,8 +83,8 @@ function createChat(language: Language, isTemporary: boolean): ChatConversation 
     messages: [{
       role: 'assistant',
       content: language === 'ar'
-        ? 'أهلاً بك! أنا مساعدك الذكي لتنظيم المهام. أخبرني ماذا يدور في ذهنك اليوم، وسأقوم بترتيبه لك.'
-        : "Welcome! I'm your smart task assistant. Tell me what's on your mind today and I'll organize it for you.",
+        ? 'هلا! قل لي وش عندك اليوم وبرتبه لك.'
+        : "Hi! Tell me what you have today and I'll organize it.",
     }],
     createdAt: now,
     updatedAt: now,
@@ -108,6 +137,12 @@ function normalizeTaskTime(time?: unknown) {
   return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
 }
 
+function normalizeTaskDate(value: unknown, fallback: string) {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return fallback;
+  const date = new Date(`${value}T12:00:00`);
+  return Number.isNaN(date.getTime()) ? fallback : value;
+}
+
 function taskTimestamp(task: Task) {
   const time = normalizeTaskTime(task.time);
   if (!time) return null;
@@ -115,6 +150,7 @@ function taskTimestamp(task: Task) {
 }
 
 interface SpeechRecognitionResultEvent {
+  resultIndex: number;
   results: ArrayLike<{
     0: { transcript: string };
     isFinal: boolean;
@@ -141,9 +177,9 @@ type SpeechRecognitionConstructor = new () => SpeechRecognitionInstance;
 
 const translations = {
   ar: {
-    welcome: 'أهلاً بك! أنا مساعدك الذكي لتنظيم المهام. أخبرني ماذا يدور في ذهنك اليوم، وسأقوم بترتيبه لك.',
+    welcome: 'هلا! قل لي وش عندك اليوم وبرتبه لك.',
     appName: 'منظم المهام',
-    taskList: 'قائمة مهامك 📋',
+    taskList: 'مهامك',
     remaining: (count: number) => `لديك ${count} مهام متبقية بانتظارك.`,
     activeTasks: 'المهام النشطة',
     completedTasks: 'المهام المنجزة',
@@ -162,21 +198,26 @@ const translations = {
     darkMode: 'الوضع الداكن',
     changeLanguage: 'Switch to English',
     newDayMessage: 'بداية يوم جديد وموفق بإذن الله! كيف يمكنني مساعدتك اليوم؟',
-    approved: 'تم اعتماد الخطة وإضافة المهام بنجاح! بالتوفيق في إنجازها. 👍',
-    ignored: 'تم تجاهل الاقتراح. يمكنك إخباري بمهام أخرى إذا أردت.',
-    error: 'عذراً، حدث خطأ أثناء معالجة طلبك. حاول مرة أخرى.',
+    approved: 'تمام، أضفت المهام لك.',
+    ignored: 'تم، تجاهلت الاقتراح.',
+    error: 'صار خطأ بسيط، حاول مرة ثانية.',
     upcomingEvents: 'المواعيد القادمة',
     noUpcomingEvents: 'لا توجد مواعيد قادمة بعد.',
     noSpecificTime: 'بدون وقت محدد',
     completeEvent: 'إكمال الموعد',
     deleteEvent: 'حذف الموعد',
     listening: 'جاري الاستماع...',
+    recording: 'جاري التسجيل... اضغط إيقاف لما تخلص',
+    processingVoice: 'جاري معالجة الصوت...',
+    cancelRecording: 'إلغاء التسجيل',
+    safariVoiceHint: 'اضغط تسجيل، تكلم، ثم اضغط إيقاف.',
     startListening: 'ابدأ الإدخال الصوتي',
     stopListening: 'إيقاف الاستماع',
     speechUnsupported: 'المتصفح لا يدعم الإدخال الصوتي. جرّب Google Chrome.',
     speechDenied: 'تم رفض إذن الميكروفون. فضلاً فعّل الميكروفون من إعدادات المتصفح.',
     speechNoSpeech: 'لم أسمع أي كلام. حاول مرة أخرى وتحدث بالقرب من الميكروفون.',
     speechUnclear: 'لم أتمكن من فهم الكلام بوضوح. حاول مرة أخرى.',
+    transcriptionFailed: 'ما قدرت أسمعك بوضوح، تقدر تكتب المهمة.',
     eventSaved: 'تم حفظ الموعد ضمن المواعيد القادمة.',
     reminder: 'التذكير',
     noReminder: 'بدون تذكير',
@@ -240,7 +281,7 @@ const translations = {
     manualReminderNeedsTime: 'يجب إضافة وقت صالح عند اختيار تذكير.',
     offlineNotice: 'أنت غير متصل، سيتم حفظ المهام على جهازك.',
     chatFallback: 'حدث خطأ في المحادثة، لكن يمكنك إضافة المهمة يدويًا.',
-    voiceFallback: 'لم يعمل الميكروفون، يمكنك كتابة المهمة أو إضافتها يدويًا.',
+    voiceFallback: 'ما اشتغل المايك، تقدر تكتب المهمة.',
     addFromText: 'إضافة من النص',
     taskSaved: 'تم حفظ المهمة على جهازك.',
     mobileChat: 'المحادثة',
@@ -257,9 +298,9 @@ const translations = {
     },
   },
   en: {
-    welcome: "Welcome! I'm your smart task assistant. Tell me what's on your mind today and I'll organize it for you.",
-    appName: 'Task Manager',
-    taskList: 'Your Tasks 📋',
+    welcome: "Hi! Tell me what you have today and I'll organize it.",
+    appName: 'Yomak AI',
+    taskList: 'Your Tasks',
     remaining: (count: number) => `You have ${count} task${count === 1 ? '' : 's'} remaining.`,
     activeTasks: 'Active tasks',
     completedTasks: 'Completed tasks',
@@ -278,21 +319,26 @@ const translations = {
     darkMode: 'Dark mode',
     changeLanguage: 'التبديل إلى العربية',
     newDayMessage: 'A fresh day is ready! How can I help you today?',
-    approved: 'Plan approved and tasks added successfully. Good luck! 👍',
-    ignored: 'Suggestion ignored. You can tell me about other tasks whenever you are ready.',
-    error: 'Sorry, something went wrong while processing your request. Please try again.',
+    approved: 'Done, I added the tasks.',
+    ignored: 'Done, I ignored the suggestion.',
+    error: 'Something went wrong. Please try again.',
     upcomingEvents: 'Upcoming Events',
     noUpcomingEvents: 'No upcoming events yet.',
     noSpecificTime: 'No specific time',
     completeEvent: 'Complete event',
     deleteEvent: 'Delete event',
     listening: 'Listening...',
+    recording: "Recording... tap stop when you're done",
+    processingVoice: 'Processing voice...',
+    cancelRecording: 'Cancel recording',
+    safariVoiceHint: 'Tap record, speak, then stop.',
     startListening: 'Start voice input',
     stopListening: 'Stop listening',
     speechUnsupported: 'This browser does not support voice input. Please try Google Chrome.',
     speechDenied: 'Microphone permission was denied. Please allow microphone access from browser settings.',
     speechNoSpeech: 'I did not hear anything. Please try again and speak closer to the microphone.',
     speechUnclear: 'I could not understand the speech clearly. Please try again.',
+    transcriptionFailed: "I couldn't hear clearly. You can type the task.",
     eventSaved: 'The event was saved under upcoming events.',
     reminder: 'Reminder',
     noReminder: 'No reminder',
@@ -356,7 +402,7 @@ const translations = {
     manualReminderNeedsTime: 'A valid time is required when a reminder is selected.',
     offlineNotice: 'You are offline. Tasks will be saved on this device.',
     chatFallback: 'Chat processing failed, but you can add the task manually.',
-    voiceFallback: 'Microphone did not work. You can type or add the task manually.',
+    voiceFallback: 'Mic did not work. You can type the task.',
     addFromText: 'Add from text',
     taskSaved: 'Task saved on this device.',
     mobileChat: 'Chat',
@@ -467,6 +513,7 @@ export default function App() {
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isListening, setIsListening] = useState(false);
+  const [voiceState, setVoiceState] = useState<VoiceState>('idle');
   const [speechError, setSpeechError] = useState('');
   const [notificationMessage, setNotificationMessage] = useState('');
   const [reminderToast, setReminderToast] = useState('');
@@ -491,16 +538,23 @@ export default function App() {
   const [chatFallbackText, setChatFallbackText] = useState('');
   const [taskSavedToast, setTaskSavedToast] = useState('');
   const [activeSection, setActiveSection] = useState<AppSection>('dashboard');
-  const [mobileView, setMobileView] = useState<MobileView>('tasks');
+  const [mobileView, setMobileView] = useState<MobileView>('chat');
   const [calendarView, setCalendarView] = useState<CalendarViewMode>('week');
   const [selectedDate, setSelectedDate] = useState(todayKey);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const recordingCancelledRef = useRef(false);
   const speechTimeoutRef = useRef<number | null>(null);
   const speechHandledRef = useRef(false);
   const speechManualStopRef = useRef(false);
+  const speechTranscriptRef = useRef('');
   const t = translations[language];
+  const isSafariOrIOS = /iP(?:hone|ad|od)|Safari/i.test(navigator.userAgent)
+    && !/Chrome|Chromium|Edg/i.test(navigator.userAgent);
   const activeChat = temporaryChat || chats.find(chat => chat.id === activeChatId) || chats[0];
   const messages = activeChat?.messages || [];
 
@@ -842,6 +896,11 @@ export default function App() {
         window.clearTimeout(speechTimeoutRef.current);
       }
       recognitionRef.current?.stop();
+      if (mediaRecorderRef.current?.state === 'recording') {
+        recordingCancelledRef.current = true;
+        mediaRecorderRef.current.stop();
+      }
+      mediaStreamRef.current?.getTracks().forEach(track => track.stop());
     };
   }, []);
 
@@ -866,6 +925,7 @@ export default function App() {
     }
     setInputValue('');
     setSpeechError('');
+    setVoiceState('idle');
     setChatFallbackText('');
     updateChatMessages(
       targetChatId,
@@ -879,7 +939,7 @@ export default function App() {
       const res = await fetch('/api/parse-tasks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: userMessage, language }),
+        body: JSON.stringify({ message: userMessage, language, selectedDate }),
       });
 
       const responseText = await res.text();
@@ -913,7 +973,7 @@ export default function App() {
               priority: task.priority || 'medium',
               time: normalizedTime || undefined,
               timeNote: normalizedTime ? task.timeNote : task.timeNote || (typeof task.time === 'string' ? task.time : undefined),
-              date: detectedEvent?.date || selectedDate,
+              date: normalizeTaskDate(task.date, detectedEvent?.date || selectedDate),
               reminderMinutes: task.reminderMinutes ?? null,
               reminderNotifiedAt: task.reminderNotifiedAt ?? null,
               completed: false,
@@ -931,8 +991,8 @@ export default function App() {
       updateChatMessages(targetChatId, targetIsTemporary, prev => [...prev, {
         role: 'assistant', 
         content: typeof data.reply === 'string' && data.reply.trim()
-          ? data.reply
-          : language === 'ar' ? 'تم استلام رسالتك.' : 'Your message was received.',
+          ? cleanAssistantMessage(data.reply, language)
+          : language === 'ar' ? 'تمام، استلمتها.' : 'Got it.',
         tasks: Array.isArray(data.tasks) ? data.tasks as Task[] : undefined,
       }]);
     } catch (error) {
@@ -970,6 +1030,7 @@ export default function App() {
     setInputValue('');
     setPendingTasks([]);
     setSpeechError('');
+    setVoiceState('idle');
     setShowChatHistory(false);
 
     const chat = createChat(language, isTemporary);
@@ -1185,11 +1246,150 @@ export default function App() {
     }
   };
 
-  const toggleListening = async () => {
+  const stopMediaStream = () => {
+    mediaStreamRef.current?.getTracks().forEach(track => track.stop());
+    mediaStreamRef.current = null;
+  };
+
+  const transcribeRecordedAudio = async (audio: Blob) => {
+    if (!audio.size) {
+      setSpeechError(t.transcriptionFailed);
+      setVoiceState('error');
+      return;
+    }
+
+    setVoiceState('processing');
+    setSpeechError('');
+
+    try {
+      const response = await fetch('/api/transcribe-audio', {
+        method: 'POST',
+        headers: {
+          'Content-Type': audio.type || 'application/octet-stream',
+          'X-Transcription-Language': language,
+        },
+        body: audio,
+      });
+      const data = await response.json() as { text?: unknown; error?: unknown };
+      const transcript = safeMessageText(data.text).trim();
+
+      if (!response.ok || !transcript) {
+        throw new Error(safeMessageText(data.error) || 'Audio transcription failed');
+      }
+
+      setInputValue(current => current.trim() ? `${current.trim()} ${transcript}` : transcript);
+      setVoiceState('idle');
+    } catch (error) {
+      console.error('Audio transcription failed:', error);
+      setSpeechError(t.transcriptionFailed);
+      setVoiceState('error');
+    }
+  };
+
+  const startMediaRecording = async () => {
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      setSpeechError(t.voiceFallback);
+      setVoiceState('error');
+      return;
+    }
+
+    setVoiceState('processing');
+    setSpeechError('');
+    recordingCancelledRef.current = false;
+    audioChunksRef.current = [];
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaStreamRef.current = stream;
+      const supportedType = [
+        'audio/mp4',
+        'audio/webm;codecs=opus',
+        'audio/webm',
+      ].find(type => typeof MediaRecorder.isTypeSupported === 'function'
+        && MediaRecorder.isTypeSupported(type));
+      const recorder = supportedType
+        ? new MediaRecorder(stream, { mimeType: supportedType })
+        : new MediaRecorder(stream);
+
+      mediaRecorderRef.current = recorder;
+      recorder.ondataavailable = event => {
+        if (event.data.size > 0) audioChunksRef.current.push(event.data);
+      };
+      recorder.onerror = () => {
+        stopMediaStream();
+        mediaRecorderRef.current = null;
+        setSpeechError(t.voiceFallback);
+        setVoiceState('error');
+      };
+      recorder.onstart = () => {
+        setVoiceState('recording');
+        setSpeechError('');
+      };
+      recorder.onstop = () => {
+        const wasCancelled = recordingCancelledRef.current;
+        const chunks = audioChunksRef.current;
+        const mimeType = recorder.mimeType || supportedType || 'application/octet-stream';
+        audioChunksRef.current = [];
+        mediaRecorderRef.current = null;
+        stopMediaStream();
+
+        if (wasCancelled) {
+          setVoiceState('idle');
+          return;
+        }
+
+        void transcribeRecordedAudio(new Blob(chunks, { type: mimeType }));
+      };
+      recorder.start(250);
+    } catch (error) {
+      console.error('Microphone recording failed:', error);
+      stopMediaStream();
+      setSpeechError(t.voiceFallback);
+      setVoiceState('error');
+    }
+  };
+
+  const stopVoiceInput = () => {
+    if (voiceState === 'recording' && mediaRecorderRef.current?.state === 'recording') {
+      recordingCancelledRef.current = false;
+      mediaRecorderRef.current.stop();
+      setVoiceState('processing');
+      return;
+    }
+
     if (isListening) {
       speechManualStopRef.current = true;
       clearSpeechTimeout();
       recognitionRef.current?.stop();
+      setIsListening(false);
+      setVoiceState('processing');
+    }
+  };
+
+  const cancelListening = () => {
+    if (mediaRecorderRef.current?.state === 'recording') {
+      recordingCancelledRef.current = true;
+      mediaRecorderRef.current.stop();
+    }
+    speechManualStopRef.current = true;
+    speechHandledRef.current = true;
+    speechTranscriptRef.current = '';
+    clearSpeechTimeout();
+    recognitionRef.current?.stop();
+    recognitionRef.current = null;
+    setIsListening(false);
+    setVoiceState('idle');
+    setSpeechError('');
+  };
+
+  const toggleListening = async () => {
+    if (isListening || voiceState === 'recording') {
+      stopVoiceInput();
+      return;
+    }
+
+    if (isSafariOrIOS) {
+      await startMediaRecording();
       return;
     }
 
@@ -1200,13 +1400,15 @@ export default function App() {
     const Recognition = speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition;
 
     if (!Recognition) {
-      setSpeechError(t.speechUnsupported);
+      await startMediaRecording();
       return;
     }
 
     setSpeechError('');
+    setVoiceState('processing');
     speechHandledRef.current = false;
     speechManualStopRef.current = false;
+    speechTranscriptRef.current = '';
 
     if (navigator.mediaDevices?.getUserMedia) {
       try {
@@ -1217,18 +1419,20 @@ export default function App() {
         setSpeechError(
           errorName === 'NotAllowedError' || errorName === 'SecurityError'
             ? t.speechDenied
-            : t.speechUnclear
+            : t.voiceFallback
         );
+        setVoiceState('error');
         return;
       }
     }
 
     const recognition = new Recognition();
-    recognition.lang = 'ar-SA';
-    recognition.continuous = false;
+    recognition.lang = language === 'ar' ? 'ar-SA' : 'en-US';
+    recognition.continuous = true;
     recognition.interimResults = false;
     recognition.onstart = () => {
       setIsListening(true);
+      setVoiceState('listening');
       setSpeechError('');
       clearSpeechTimeout();
       speechTimeoutRef.current = window.setTimeout(() => {
@@ -1236,42 +1440,68 @@ export default function App() {
         speechHandledRef.current = true;
         setSpeechError(t.speechNoSpeech);
         setIsListening(false);
+        setVoiceState('error');
         recognition.stop();
       }, 8_000);
     };
     recognition.onresult = event => {
-      const transcript = event.results[0]?.[0]?.transcript?.trim();
       clearSpeechTimeout();
-      speechHandledRef.current = true;
-      if (transcript) {
-        setInputValue(current => current.trim() ? `${current.trim()} ${transcript}` : transcript);
+      const finalSegments: string[] = [];
+      for (let index = event.resultIndex; index < event.results.length; index += 1) {
+        const result = event.results[index];
+        const transcript = result?.[0]?.transcript?.trim();
+        if (result?.isFinal && transcript) finalSegments.push(transcript);
+      }
+
+      if (finalSegments.length > 0) {
+        speechHandledRef.current = true;
+        speechTranscriptRef.current = [
+          speechTranscriptRef.current,
+          ...finalSegments,
+        ].filter(Boolean).join(' ').trim();
         setSpeechError('');
-      } else {
-        setSpeechError(t.speechUnclear);
       }
     };
     recognition.onerror = event => {
       clearSpeechTimeout();
       setIsListening(false);
-      if (speechHandledRef.current || speechManualStopRef.current) return;
+      if (speechManualStopRef.current || speechTranscriptRef.current) return;
 
       speechHandledRef.current = true;
       if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
-        setSpeechError(t.speechDenied);
+        if (event.error === 'not-allowed') {
+          setSpeechError(t.speechDenied);
+          setVoiceState('error');
+        } else {
+          void startMediaRecording();
+        }
       } else if (event.error === 'no-speech') {
         setSpeechError(t.speechNoSpeech);
+        setVoiceState('error');
       } else {
-        setSpeechError(t.speechUnclear);
+        void startMediaRecording();
       }
     };
     recognition.onend = () => {
       clearSpeechTimeout();
       setIsListening(false);
       recognitionRef.current = null;
+      const transcript = speechTranscriptRef.current.trim();
+
+      if (transcript) {
+        setInputValue(current => current.trim() ? `${current.trim()} ${transcript}` : transcript);
+        speechTranscriptRef.current = '';
+        setSpeechError('');
+        setVoiceState('idle');
+        return;
+      }
 
       if (!speechHandledRef.current && !speechManualStopRef.current) {
         speechHandledRef.current = true;
         setSpeechError(t.speechNoSpeech);
+        setVoiceState('error');
+      } else if (speechManualStopRef.current) {
+        setVoiceState('idle');
       }
     };
 
@@ -1282,18 +1512,8 @@ export default function App() {
     } catch {
       clearSpeechTimeout();
       speechHandledRef.current = true;
-      setSpeechError(t.speechUnclear);
       setIsListening(false);
-    }
-  };
-
-  const getCategoryIcon = (category: string) => {
-    switch (category) {
-      case 'work': return '💼';
-      case 'personal': return '🏠';
-      case 'health': return '🥗';
-      case 'social': return '🤝';
-      default: return '✅';
+      await startMediaRecording();
     }
   };
 
@@ -1346,8 +1566,8 @@ export default function App() {
     >
       {/* Sidebar - Desktop Only */}
       <aside className={`hidden lg:flex w-24 flex-col items-center py-8 bg-white border-zinc-200 transition-colors dark:bg-zinc-900 dark:border-zinc-800 ${language === 'ar' ? 'border-l' : 'border-r'}`}>
-        <div className="w-12 h-12 bg-zinc-900 rounded-2xl flex items-center justify-center text-white mb-10 shadow-lg dark:bg-white dark:text-zinc-950">
-          <Sparkles size={28} />
+        <div className="mb-10 flex h-12 w-12 items-center justify-center rounded-xl bg-primary text-white shadow-sm">
+          <ListChecks size={26} />
         </div>
         <nav className="flex flex-col gap-8 flex-1">
           <button
@@ -1390,19 +1610,13 @@ export default function App() {
       <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden md:flex-row">
         
         {/* Mobile Header */}
-        <div className="flex min-h-14 shrink-0 items-center justify-between border-b border-zinc-100 bg-white px-4 py-2 transition-colors dark:border-zinc-800 dark:bg-zinc-900 md:hidden">
-           <div className="flex items-center gap-2">
-            <Sparkles className="text-zinc-800 dark:text-zinc-100" size={20} />
+        <div className="flex min-h-14 shrink-0 items-center border-b border-zinc-100 bg-white px-4 py-2 transition-colors dark:border-zinc-800 dark:bg-zinc-900 md:hidden">
+          <div className="flex items-center gap-2.5">
+            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-white">
+              <ListChecks size={18} />
+            </span>
             <span className="font-bold">{t.appName}</span>
-           </div>
-           <div className="flex items-center gap-1">
-            <button onClick={toggleLanguage} className="flex h-11 w-11 items-center justify-center text-zinc-400 dark:text-zinc-300" title={t.changeLanguage}>
-              <Languages size={20} />
-            </button>
-            <button onClick={toggleTheme} className="flex h-11 w-11 items-center justify-center text-zinc-400 dark:text-zinc-300" title={isDarkMode ? t.lightMode : t.darkMode}>
-              {isDarkMode ? <Sun size={20} /> : <Moon size={20} />}
-            </button>
-           </div>
+          </div>
         </div>
 
         {/* Tasks Section */}
@@ -1555,7 +1769,6 @@ export default function App() {
                       <h3 className="break-words text-base font-semibold leading-snug text-zinc-800 [overflow-wrap:anywhere] dark:text-zinc-100 sm:text-lg">{task.title}</h3>
                       <div className="mt-2 flex flex-wrap items-center gap-2 sm:gap-4">
                         <span className="flex items-center gap-1.5 text-xs bg-zinc-100 px-3 py-1.5 rounded-full text-zinc-600 font-medium dark:bg-zinc-800 dark:text-zinc-300">
-                          <span className="text-base">{getCategoryIcon(task.category)}</span>
                           {t.categories[task.category]}
                         </span>
                         {task.time && (
@@ -1654,12 +1867,12 @@ export default function App() {
             )}
             
             {pendingList.length === 0 && completedList.length === 0 && (
-              <div className="py-24 text-center">
-                <div className="inline-flex p-8 rounded-[40px] bg-white border border-zinc-100 shadow-sm text-zinc-300 mb-6 dark:bg-zinc-900 dark:border-zinc-800 dark:text-zinc-600">
-                  <Calendar size={48} strokeWidth={1.5} />
+              <div className="py-12 text-center sm:py-24">
+                <div className="mb-4 inline-flex rounded-2xl border border-zinc-100 bg-white p-5 text-zinc-300 shadow-sm dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-600 sm:mb-6 sm:rounded-[40px] sm:p-8">
+                  <Calendar className="h-9 w-9 sm:h-12 sm:w-12" strokeWidth={1.5} />
                 </div>
-                <h3 className="text-2xl font-bold text-zinc-800 dark:text-zinc-100">{t.noTasksForDay}</h3>
-                <p className="text-zinc-500 mt-2 dark:text-zinc-400">{t.emptyDescription}</p>
+                <h3 className="text-xl font-bold text-zinc-800 dark:text-zinc-100 sm:text-2xl">{t.noTasksForDay}</h3>
+                <p className="mx-auto mt-2 max-w-sm text-sm text-zinc-500 dark:text-zinc-400 sm:text-base">{t.emptyDescription}</p>
               </div>
             )}
               </div>
@@ -1750,15 +1963,15 @@ export default function App() {
             <div className="mt-3 grid grid-cols-3 gap-2">
               <button
                 onClick={() => startNewChat(false)}
-                className="flex min-w-0 items-center justify-center gap-1.5 rounded-lg bg-primary px-2 py-2 text-[11px] font-bold text-white transition-colors hover:bg-primary/90"
+                className="flex min-h-11 min-w-0 items-center justify-center gap-1.5 rounded-lg bg-primary px-2 py-2 text-[11px] font-bold text-white transition-colors hover:bg-primary/90"
                 title={t.newChat}
               >
                 <Plus size={15} />
-                <span className="truncate">{t.newChat}</span>
+                <span className="hidden truncate sm:inline">{t.newChat}</span>
               </button>
               <button
                 onClick={() => startNewChat(true)}
-                className={`flex min-w-0 items-center justify-center gap-1.5 rounded-lg border px-2 py-2 text-[11px] font-bold transition-colors ${
+                className={`flex min-h-11 min-w-0 items-center justify-center gap-1.5 rounded-lg border px-2 py-2 text-[11px] font-bold transition-colors ${
                   temporaryChat
                     ? 'border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200'
                     : 'border-zinc-200 text-zinc-600 hover:border-amber-300 hover:text-amber-700 dark:border-zinc-700 dark:text-zinc-300'
@@ -1766,11 +1979,11 @@ export default function App() {
                 title={t.temporaryChat}
               >
                 <ShieldCheck size={15} />
-                <span className="truncate">{t.temporaryChat}</span>
+                <span className="hidden truncate sm:inline">{t.temporaryChat}</span>
               </button>
               <button
                 onClick={() => setShowChatHistory(current => !current)}
-                className={`flex min-w-0 items-center justify-center gap-1.5 rounded-lg border px-2 py-2 text-[11px] font-bold transition-colors ${
+                className={`flex min-h-11 min-w-0 items-center justify-center gap-1.5 rounded-lg border px-2 py-2 text-[11px] font-bold transition-colors ${
                   showChatHistory
                     ? 'border-primary bg-primary/10 text-primary'
                     : 'border-zinc-200 text-zinc-600 hover:border-primary hover:text-primary dark:border-zinc-700 dark:text-zinc-300'
@@ -1778,7 +1991,7 @@ export default function App() {
                 title={t.chatHistory}
               >
                 <History size={15} />
-                <span className="truncate">{t.chatHistory}</span>
+                <span className="hidden truncate sm:inline">{t.chatHistory}</span>
               </button>
             </div>
           </div>
@@ -1847,23 +2060,28 @@ export default function App() {
             className="flex-1 space-y-4 overflow-y-auto bg-slate-50/30 p-4 custom-scrollbar transition-colors dark:bg-zinc-950/35 sm:space-y-6 sm:p-6"
           >
             {messages.map((msg, i) => {
+               const safeContent = safeMessageText(msg?.content);
+               const messageRole = msg?.role === 'user' ? 'user' : 'assistant';
                const isLastMessage = i === messages.length - 1;
-               const showActions = isLastMessage && msg.role === 'assistant' && pendingTasks.length > 0;
+               const showActions = isLastMessage && messageRole === 'assistant' && pendingTasks.length > 0;
+               if (!safeContent) return null;
 
                return (
                 <div key={i} className="space-y-3">
                   <motion.div
                     initial={{ opacity: 0, y: 10 }}
                     animate={{ opacity: 1, y: 0 }}
-                    className={`flex ${msg.role === 'user' ? 'justify-start' : 'justify-end'}`}
+                    className={`flex ${messageRole === 'user' ? 'justify-start' : 'justify-end'}`}
                   >
                     <div className={`
                       max-w-[90%] whitespace-pre-wrap break-words [overflow-wrap:anywhere] p-3.5 sm:p-4 rounded-3xl text-sm leading-relaxed shadow-sm
-                      ${msg.role === 'user' 
+                      ${messageRole === 'user'
                         ? 'bg-zinc-900 text-white rounded-tr-none dark:bg-primary' 
                         : 'bg-white text-zinc-800 rounded-tl-none border border-zinc-100 dark:bg-zinc-800 dark:text-zinc-100 dark:border-zinc-700'}
                     `} dir={language === 'ar' ? 'rtl' : 'ltr'}>
-                      {msg.content}
+                      {messageRole === 'assistant'
+                        ? cleanAssistantMessage(safeContent, language)
+                        : safeContent}
                     </div>
                   </motion.div>
                   
@@ -1926,16 +2144,18 @@ export default function App() {
             <div className="flex w-full items-end gap-2 sm:gap-3">
               <button
                 onClick={toggleListening}
-                disabled={isLoading}
+                disabled={isLoading || voiceState === 'processing'}
                 className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full border transition-all disabled:opacity-40 sm:h-12 sm:w-12 ${
-                  isListening
+                  isListening || voiceState === 'recording'
                     ? 'border-red-400 bg-red-50 text-red-500 shadow-md shadow-red-500/15 dark:border-red-500/40 dark:bg-red-500/10'
                     : 'border-zinc-200 bg-zinc-50 text-zinc-500 hover:border-primary hover:text-primary dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-400'
                 }`}
-                title={isListening ? t.stopListening : t.startListening}
-                aria-label={isListening ? t.stopListening : t.startListening}
+                title={isListening || voiceState === 'recording' ? t.stopListening : t.startListening}
+                aria-label={isListening || voiceState === 'recording' ? t.stopListening : t.startListening}
               >
-                <Mic size={20} className={isListening ? 'animate-pulse' : ''} />
+                {isListening || voiceState === 'recording'
+                  ? <Square size={16} fill="currentColor" />
+                  : <Mic size={20} />}
               </button>
               <div className="group min-w-0 flex-1">
                 <textarea
@@ -1956,33 +2176,41 @@ export default function App() {
               </div>
               <button
                 onClick={handleSend}
-                disabled={isLoading || !inputValue.trim() || isListening}
+                disabled={isLoading || !inputValue.trim() || isListening || voiceState === 'recording'}
                 className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-primary text-white shadow-md shadow-primary/20 transition-all hover:scale-105 active:scale-95 disabled:opacity-30 disabled:hover:scale-100 sm:h-12 sm:w-12"
                 aria-label={language === 'ar' ? 'إرسال' : 'Send'}
               >
                 <Send size={20} />
               </button>
             </div>
-            {isListening && (
-              <div className="mt-3 flex items-center justify-center gap-2 text-xs font-semibold text-red-500">
-                <span className="h-2 w-2 animate-pulse rounded-full bg-red-500" />
-                {t.listening}
-              </div>
-            )}
-            {speechError && (
-              <div className="mt-3 text-center">
-                <p className="text-xs font-medium text-red-500">{speechError}</p>
-                <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{t.voiceFallback}</p>
+            {(isListening || voiceState === 'recording') && (
+              <div className="mt-2 flex min-h-11 items-center justify-between gap-3 rounded-lg bg-red-50 px-3 text-xs font-semibold text-red-600 dark:bg-red-500/10 dark:text-red-300">
+                <span className="flex items-center gap-2">
+                  <span className="h-2 w-2 animate-pulse rounded-full bg-red-500" />
+                  {voiceState === 'recording' ? t.recording : t.listening}
+                </span>
                 <button
-                  onClick={() => openManualTaskForm(inputValue)}
-                  className="mt-2 rounded-md bg-primary/10 px-3 py-2 text-xs font-bold text-primary"
+                  onClick={cancelListening}
+                  className="flex min-h-9 items-center gap-1 rounded-md px-2 text-xs font-bold hover:bg-red-100 dark:hover:bg-red-500/10"
                 >
-                  {t.addTask}
+                  <X size={15} />
+                  {t.cancelRecording}
                 </button>
               </div>
             )}
-            {!isListening && !speechError && (
-              <p className="text-[10px] text-center text-zinc-400 mt-4 font-medium dark:text-zinc-500">{t.inputHint}</p>
+            {voiceState === 'processing' && (
+              <div className="mt-2 flex min-h-10 items-center justify-center gap-2 text-xs font-semibold text-primary">
+                <span className="h-2 w-2 animate-pulse rounded-full bg-primary" />
+                {t.processingVoice}
+              </div>
+            )}
+            {voiceState === 'error' && speechError && (
+              <p className="mt-2 text-center text-xs font-medium text-red-500">{speechError}</p>
+            )}
+            {isSafariOrIOS && voiceState === 'idle' && !speechError && (
+              <p className="mt-2 text-center text-[11px] text-zinc-400 dark:text-zinc-500">
+                {t.safariVoiceHint}
+              </p>
             )}
           </div>
         </section>

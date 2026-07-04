@@ -1,11 +1,16 @@
 import { GoogleGenAI } from "@google/genai";
 
-const SYSTEM_INSTRUCTION = `أنت مساعد ذكي ومنظم للمهام. مهمتك هي مساعدة المستخدم في ترتيب يومه بطريقة ودودة وحوارية.
+const SYSTEM_INSTRUCTION = `أنت مساعد سعودي ودود لتنظيم المهام.
 عندما يرسل المستخدم رسالة عن مهامه:
 1. قم بتحليل المهام وتصنيفها.
-2. اقترح خطة عمل مرتبة للمستخدم.
-3. التزم بلهجة ودودة وداعمة وشجع المستخدم.
-4. يجب أن ينتهي ردك دائماً بكتلة JSON تحتوي على المهام المقترحة ليتمكن النظام من معالجتها.
+2. اجعل الرد قصيراً جداً وطبيعياً، بجملة أو جملتين فقط.
+3. استخدم لهجة سعودية بسيطة مثل: "أبشر، رتبتها لك." أو "تمام، أضفتها لك."
+4. لا تستخدم العربية الرسمية ولا تكتب شرحاً طويلاً.
+5. استخرج كل مهمة أو موعد مستقل في عنصر منفصل، حتى لو احتوت الرسالة على عدة جمل وتواريخ.
+6. افهم تعبيرات التاريخ مثل: بكرة، بعد بكرة، الأسبوع الجاي، بعد أسبوعين، بعد شهر، بتاريخ 26، يوم الاثنين، والساعة 5.
+7. أعد date لكل مهمة بصيغة YYYY-MM-DD. استخدم تاريخ التقويم المرجعي لحساب التواريخ النسبية.
+8. عند قول "بتاريخ 26" بدون شهر، استخدم شهر وسنة تاريخ التقويم المرجعي. إذا بقي التاريخ غامضاً فلا تخمّن؛ ضع سؤالاً قصيراً في clarification ولا تضف المهمة الغامضة.
+9. بعد الرد القصير، أضف كائن JSON واحداً للمعالجة الداخلية.
 
 تنسيق الرد:
 نص حواري مشجع باللغة العربية، يليه كتلة JSON واحدة بالتنسيق التالي:
@@ -15,19 +20,42 @@ const SYSTEM_INSTRUCTION = `أنت مساعد ذكي ومنظم للمهام. م
       "title": "عنوان المهمة بالعربية",
       "category": "work|personal|health|social|other",
       "priority": "low|medium|high",
-      "time": "الوقت المقترح إن وجد"
+      "date": "YYYY-MM-DD",
+      "time": "HH:MM إن وجد"
     }
-  ]
+  ],
+  "clarification": null
 }`;
+
+function cleanVisibleReply(text: string, language: "ar" | "en") {
+  const cleaned = text
+    .replace(/```(?:json)?/gi, "")
+    .replace(/```/g, "")
+    .replace(/\{[\s\S]*\}/g, "")
+    .replace(/^\s*["']+|["']+\s*$/g, "")
+    .replace(/\n{2,}/g, " ")
+    .trim();
+
+  if (!cleaned || /["']?tasks["']?\s*:/.test(cleaned)) {
+    return language === "en" ? "Got it." : "تمام، استلمتها.";
+  }
+
+  return cleaned.length > 180 ? `${cleaned.slice(0, 177).trim()}...` : cleaned;
+}
 
 interface ParsedTask {
   title: string;
   category: "work" | "personal" | "health" | "social" | "other";
   priority: "low" | "medium" | "high";
+  date?: string;
   time?: string;
 }
 
-export async function parseTasksWithGemini(message: string, language: "ar" | "en") {
+export async function parseTasksWithGemini(
+  message: string,
+  language: "ar" | "en",
+  selectedDate?: string,
+) {
   const configuredKey = process.env.GEMINI_API_KEY?.trim();
   const apiKey = configuredKey?.replace(/^(["'])(.*)\1$/, "$2").trim();
   if (!apiKey) {
@@ -49,8 +77,10 @@ export async function parseTasksWithGemini(message: string, language: "ar" | "en
     config: {
       systemInstruction: `${SYSTEM_INSTRUCTION}
 
+تاريخ التقويم المرجعي: ${selectedDate || new Date().toISOString().slice(0, 10)}.
 لغة الرد المطلوبة: ${language === "en" ? "English" : "العربية"}.
-اكتب الرد وعناوين المهام باللغة المطلوبة، مع الحفاظ على قيم category وpriority بالإنجليزية كما هي في تنسيق JSON.`,
+اكتب الرد وعناوين المهام باللغة المطلوبة، مع الحفاظ على قيم category وpriority بالإنجليزية كما هي في تنسيق JSON.
+إذا كان clarification مطلوباً، اجعله سؤالاً واحداً قصيراً باللغة المطلوبة.`,
     },
   });
 
@@ -58,21 +88,30 @@ export async function parseTasksWithGemini(message: string, language: "ar" | "en
   const jsonMatch = text.match(/\{[\s\S]*\}/);
   let tasks: ParsedTask[] = [];
   let cleanText = text;
+  let clarification = "";
 
   if (jsonMatch) {
     try {
-      const jsonData = JSON.parse(jsonMatch[0]) as { tasks?: ParsedTask[] };
+      const jsonData = JSON.parse(jsonMatch[0]) as {
+        tasks?: ParsedTask[];
+        clarification?: unknown;
+      };
       tasks = Array.isArray(jsonData.tasks) ? jsonData.tasks : [];
+      clarification = typeof jsonData.clarification === "string"
+        ? jsonData.clarification.trim()
+        : "";
       cleanText = text.replace(jsonMatch[0], "").trim();
     } catch (error) {
       console.error("Failed to parse JSON from Gemini response:", error);
     }
   }
 
+  const reply = clarification || (tasks.length > 0
+    ? language === "en" ? "Done, I organized it for you." : "أبشر، رتبتها لك."
+    : cleanVisibleReply(cleanText, language));
+
   return {
-    reply: cleanText || (language === "en"
-      ? "Your tasks were received successfully."
-      : "تم استلام مهامك بنجاح!"),
+    reply,
     tasks: tasks.map(task => ({
       ...task,
       id: globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2, 11),
