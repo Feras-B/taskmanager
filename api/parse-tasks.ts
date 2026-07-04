@@ -1,7 +1,18 @@
-import type { Request, Response } from "express";
-import { parseTasksWithGemini } from "../lib/taskParser";
+interface ApiRequest {
+  method?: string;
+  body?: {
+    message?: unknown;
+    language?: unknown;
+  };
+}
 
-export default async function handler(req: Request, res: Response) {
+interface ApiResponse {
+  setHeader(name: string, value: string): void;
+  status(code: number): ApiResponse;
+  json(body: unknown): ApiResponse;
+}
+
+export default async function handler(req: ApiRequest, res: ApiResponse) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
     return res.status(405).json({ error: "Method not allowed" });
@@ -13,6 +24,7 @@ export default async function handler(req: Request, res: Response) {
   }
 
   try {
+    const { parseTasksWithGemini } = await import("../lib/taskParser");
     const result = await parseTasksWithGemini(
       message.trim(),
       language === "en" ? "en" : "ar",
