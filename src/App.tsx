@@ -281,6 +281,7 @@ const translations = {
     manualReminderNeedsTime: 'يجب إضافة وقت صالح عند اختيار تذكير.',
     offlineNotice: 'أنت غير متصل، سيتم حفظ المهام على جهازك.',
     chatFallback: 'حدث خطأ في المحادثة، لكن يمكنك إضافة المهمة يدويًا.',
+    quotaReached: 'وصلنا للحد المجاني مؤقتًا، جرّب بعد شوي أو أضف المهمة يدويًا.',
     voiceFallback: 'ما اشتغل المايك، تقدر تكتب المهمة.',
     addFromText: 'إضافة من النص',
     taskSaved: 'تم حفظ المهمة على جهازك.',
@@ -402,6 +403,7 @@ const translations = {
     manualReminderNeedsTime: 'A valid time is required when a reminder is selected.',
     offlineNotice: 'You are offline. Tasks will be saved on this device.',
     chatFallback: 'Chat processing failed, but you can add the task manually.',
+    quotaReached: 'Temporary API limit reached. Try again later or add the task manually.',
     voiceFallback: 'Mic did not work. You can type the task.',
     addFromText: 'Add from text',
     taskSaved: 'Task saved on this device.',
@@ -548,6 +550,7 @@ export default function App() {
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const recordingCancelledRef = useRef(false);
+  const sendInFlightRef = useRef(false);
   const speechTimeoutRef = useRef<number | null>(null);
   const speechHandledRef = useRef(false);
   const speechManualStopRef = useRef(false);
@@ -905,9 +908,18 @@ export default function App() {
   }, []);
 
   const handleSend = async () => {
-    if (!inputValue.trim() || isLoading) return;
+    if (!inputValue.trim() || isLoading || sendInFlightRef.current) return;
 
     const userMessage = inputValue;
+    const restoreInput = () => {
+      setInputValue(current => {
+        const existing = current.trim();
+        if (!existing) return userMessage;
+        if (existing.includes(userMessage)) return existing;
+        return `${userMessage} ${existing}`;
+      });
+    };
+    sendInFlightRef.current = true;
     let targetChat = activeChat;
     let targetIsTemporary = Boolean(temporaryChat);
 
@@ -954,6 +966,16 @@ export default function App() {
 
       if (!res.ok) {
         console.error('Chat API request failed:', res.status, data.error || responseText);
+        if (res.status === 429) {
+          restoreInput();
+          setPendingTasks([]);
+          setChatFallbackText(userMessage);
+          updateChatMessages(targetChatId, targetIsTemporary, prev => [...prev, {
+            role: 'assistant',
+            content: t.quotaReached,
+          }]);
+          return;
+        }
         throw new Error(data.error || `Chat API failed with status ${res.status}`);
       }
 
@@ -997,12 +1019,14 @@ export default function App() {
       }]);
     } catch (error) {
       console.error('Failed to process chat message:', error);
+      restoreInput();
       setChatFallbackText(userMessage);
       updateChatMessages(targetChatId, targetIsTemporary, prev => [...prev, {
         role: 'assistant', 
         content: t.chatFallback
       }]);
     } finally {
+      sendInFlightRef.current = false;
       setIsLoading(false);
     }
   };

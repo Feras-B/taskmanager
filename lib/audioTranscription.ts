@@ -23,7 +23,14 @@ export async function transcribeAudioWithGemini(
   if (!apiKey) throw new Error("GEMINI_API_KEY is not configured");
   if (!audio.length) throw new Error("Audio is empty");
 
-  const ai = new GoogleGenAI({ apiKey });
+  const ai = new GoogleGenAI({
+    apiKey,
+    httpOptions: {
+      retryOptions: {
+        attempts: 1,
+      },
+    },
+  });
   const response = await ai.models.generateContent({
     model: "gemini-3-flash-preview",
     contents: [{

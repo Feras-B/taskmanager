@@ -2,7 +2,7 @@ import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import dotenv from "dotenv";
-import { parseTasksWithGemini } from "./lib/taskParser";
+import { isGeminiQuotaError, parseTasksWithGemini } from "./lib/taskParser";
 import { transcribeAudioWithGemini } from "./lib/audioTranscription";
 
 dotenv.config({ path: ".env.local" });
@@ -29,6 +29,9 @@ app.post("/api/parse-tasks", async (req, res) => {
     res.json(result);
   } catch (error) {
     console.error("Gemini Error:", error);
+    if (isGeminiQuotaError(error)) {
+      return res.status(429).json({ error: "quota_exceeded" });
+    }
     res.status(500).json({
       error: process.env.GEMINI_API_KEY
         ? "Failed to process message"

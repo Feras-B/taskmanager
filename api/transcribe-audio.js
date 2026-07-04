@@ -51,7 +51,14 @@ export default async function handler(req, res) {
 
     const mimeType = String(req.headers["content-type"] || "audio/webm").split(";")[0];
     const language = req.headers["x-transcription-language"] === "en" ? "en" : "ar";
-    const ai = new GoogleGenAI({ apiKey });
+    const ai = new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        retryOptions: {
+          attempts: 1,
+        },
+      },
+    });
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
       contents: [{

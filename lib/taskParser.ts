@@ -51,6 +51,28 @@ interface ParsedTask {
   time?: string;
 }
 
+export function isGeminiQuotaError(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as {
+    status?: unknown;
+    statusCode?: unknown;
+    code?: unknown;
+    message?: unknown;
+    error?: { code?: unknown; message?: unknown; status?: unknown };
+  };
+  const status = candidate.status
+    ?? candidate.statusCode
+    ?? candidate.code
+    ?? candidate.error?.code;
+  const message = [
+    candidate.message,
+    candidate.error?.message,
+    candidate.error?.status,
+  ].filter(value => typeof value === "string").join(" ");
+
+  return Number(status) === 429 || /429|quota|resource_exhausted/i.test(message);
+}
+
 export async function parseTasksWithGemini(
   message: string,
   language: "ar" | "en",
@@ -67,6 +89,9 @@ export async function parseTasksWithGemini(
     httpOptions: {
       headers: {
         "User-Agent": "yomak-ai",
+      },
+      retryOptions: {
+        attempts: 1,
       },
     },
   });

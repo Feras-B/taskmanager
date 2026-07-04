@@ -43,6 +43,17 @@ function cleanVisibleReply(text, language) {
   return cleaned.length > 180 ? `${cleaned.slice(0, 177).trim()}...` : cleaned;
 }
 
+function isGeminiQuotaError(error) {
+  if (!error || typeof error !== "object") return false;
+  const status = error.status ?? error.statusCode ?? error.code ?? error.error?.code;
+  const message = [
+    error.message,
+    error.error?.message,
+    error.error?.status,
+  ].filter(value => typeof value === "string").join(" ");
+  return Number(status) === 429 || /429|quota|resource_exhausted/i.test(message);
+}
+
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
@@ -75,6 +86,9 @@ export default async function handler(req, res) {
       httpOptions: {
         headers: {
           "User-Agent": "yomak-ai",
+        },
+        retryOptions: {
+          attempts: 1,
         },
       },
     });
@@ -128,6 +142,9 @@ export default async function handler(req, res) {
     });
   } catch (error) {
     console.error("Gemini API error:", error);
+    if (isGeminiQuotaError(error)) {
+      return res.status(429).json({ error: "quota_exceeded" });
+    }
     return res.status(500).json({ error: "Failed to process message" });
   }
 }
