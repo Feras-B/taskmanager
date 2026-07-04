@@ -28,7 +28,8 @@ interface ParsedTask {
 }
 
 export async function parseTasksWithGemini(message: string, language: "ar" | "en") {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const configuredKey = process.env.GEMINI_API_KEY?.trim();
+  const apiKey = configuredKey?.replace(/^(["'])(.*)\1$/, "$2").trim();
   if (!apiKey) {
     throw new Error("GEMINI_API_KEY is not configured");
   }
