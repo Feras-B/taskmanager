@@ -52,6 +52,8 @@ const MAX_AI_CALLS_PER_HOUR = 10;
 const AI_USAGE_KEY = 'ai_usage_timestamps';
 const AUDIO_TRANSCRIPT_CACHE_KEY = 'audio_transcript_cache';
 const PARSE_RESULT_CACHE_KEY = 'parse_result_cache';
+const PARSE_FAILURE_CACHE_KEY = 'parse_failure_cache';
+const PARSE_FAILURE_TTL_MS = 10 * 60 * 1000;
 
 interface AudioTranscriptCacheEntry {
   hash: string;
@@ -62,6 +64,11 @@ interface AudioTranscriptCacheEntry {
 interface ParseResultCacheEntry {
   reply?: string;
   tasks?: unknown;
+  createdAt: number;
+}
+
+interface ParseFailureCacheEntry {
+  reason: 'service_unavailable' | 'network';
   createdAt: number;
 }
 
@@ -348,6 +355,7 @@ const translations = {
     offlineNotice: 'أنت غير متصل، سيتم حفظ المهام على جهازك.',
     chatFallback: 'حدث خطأ في المحادثة، لكن يمكنك إضافة المهمة يدويًا.',
     quotaReached: 'وصلنا للحد المجاني مؤقتًا، النص محفوظ وتقدر تضيفه يدويًا أو تجرب بعد شوي.',
+    serviceUnavailable: 'الخدمة مشغولة مؤقتًا، النص محفوظ وتقدر تضيفه يدويًا أو تجرب بعد شوي.',
     usageLimitReached: 'وصلت لحد الاستخدام المؤقت، جرّب بعد ساعة أو أضف المهمة يدويًا.',
     voiceFallback: 'ما اشتغل المايك، تقدر تكتب المهمة.',
     addFromText: 'إضافة من النص',
@@ -478,6 +486,7 @@ const translations = {
     offlineNotice: 'You are offline. Tasks will be saved on this device.',
     chatFallback: 'Chat processing failed, but you can add the task manually.',
     quotaReached: 'Temporary free limit reached. Your text is saved; try later or add it manually.',
+    serviceUnavailable: 'The service is temporarily busy. Your text is saved; try later or add it manually.',
     usageLimitReached: 'Temporary usage limit reached. Try again in an hour or add the task manually.',
     voiceFallback: 'Mic did not work. You can type the task.',
     addFromText: 'Add from text',
@@ -1035,14 +1044,36 @@ export default function App() {
         PARSE_RESULT_CACHE_KEY,
         {},
       );
+      const parseFailureCache = readJsonStorage<Record<string, ParseFailureCacheEntry>>(
+        PARSE_FAILURE_CACHE_KEY,
+        {},
+      );
       const cachedResult = parseCache[parseCacheKey];
+      const cachedFailure = parseFailureCache[parseCacheKey];
 
       if (cachedResult) {
         data = {
           reply: cachedResult.reply,
           tasks: cachedResult.tasks,
         };
+      } else if (
+        cachedFailure &&
+        Date.now() - cachedFailure.createdAt < PARSE_FAILURE_TTL_MS
+      ) {
+        restoreInput();
+        setPendingTasks([]);
+        setChatFallbackText(userMessage);
+        updateChatMessages(targetChatId, targetIsTemporary, prev => [...prev, {
+          role: 'assistant',
+          content: t.serviceUnavailable,
+        }]);
+        return;
       } else {
+        if (cachedFailure) {
+          const { [parseCacheKey]: _expired, ...remainingFailures } = parseFailureCache;
+          localStorage.setItem(PARSE_FAILURE_CACHE_KEY, JSON.stringify(remainingFailures));
+        }
+
         if (!consumeAiCall()) {
           restoreInput();
           setPendingTasks([]);
@@ -1077,6 +1108,28 @@ export default function App() {
             updateChatMessages(targetChatId, targetIsTemporary, prev => [...prev, {
               role: 'assistant',
               content: t.quotaReached,
+            }]);
+            return;
+          }
+          if (res.status === 503 || data.error === 'service_unavailable' || data.error === 'network_error') {
+            const nextFailureCache = {
+              ...parseFailureCache,
+              [parseCacheKey]: {
+                reason: data.error === 'network_error' ? 'network' : 'service_unavailable',
+                createdAt: Date.now(),
+              } satisfies ParseFailureCacheEntry,
+            };
+            const recentFailures = Object.entries(nextFailureCache)
+              .filter(([, entry]) => Date.now() - entry.createdAt < PARSE_FAILURE_TTL_MS)
+              .sort(([, a], [, b]) => b.createdAt - a.createdAt)
+              .slice(0, 30);
+            localStorage.setItem(PARSE_FAILURE_CACHE_KEY, JSON.stringify(Object.fromEntries(recentFailures)));
+            restoreInput();
+            setPendingTasks([]);
+            setChatFallbackText(userMessage);
+            updateChatMessages(targetChatId, targetIsTemporary, prev => [...prev, {
+              role: 'assistant',
+              content: t.serviceUnavailable,
             }]);
             return;
           }
@@ -1139,9 +1192,29 @@ export default function App() {
       console.error('Failed to process chat message:', error);
       restoreInput();
       setChatFallbackText(userMessage);
+      const errorMessage = error instanceof Error ? error.message : '';
+      const networkOrServiceError = /failed to fetch|networkerror|network_error|service_unavailable|service unavailable|retryable/i.test(errorMessage);
+      if (networkOrServiceError) {
+        const failureCache = readJsonStorage<Record<string, ParseFailureCacheEntry>>(
+          PARSE_FAILURE_CACHE_KEY,
+          {},
+        );
+        const nextFailureCache = {
+          ...failureCache,
+          [parseCacheKey]: {
+            reason: 'network',
+            createdAt: Date.now(),
+          } satisfies ParseFailureCacheEntry,
+        };
+        const recentFailures = Object.entries(nextFailureCache)
+          .filter(([, entry]) => Date.now() - entry.createdAt < PARSE_FAILURE_TTL_MS)
+          .sort(([, a], [, b]) => b.createdAt - a.createdAt)
+          .slice(0, 30);
+        localStorage.setItem(PARSE_FAILURE_CACHE_KEY, JSON.stringify(Object.fromEntries(recentFailures)));
+      }
       updateChatMessages(targetChatId, targetIsTemporary, prev => [...prev, {
         role: 'assistant', 
-        content: t.chatFallback
+        content: networkOrServiceError ? t.serviceUnavailable : t.chatFallback
       }]);
     } finally {
       sendInFlightRef.current = false;

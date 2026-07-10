@@ -73,6 +73,131 @@ export function isGeminiQuotaError(error: unknown) {
   return Number(status) === 429 || /429|quota|resource_exhausted/i.test(message);
 }
 
+export function isGeminiServiceUnavailableError(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as {
+    status?: unknown;
+    statusCode?: unknown;
+    code?: unknown;
+    message?: unknown;
+    error?: { code?: unknown; message?: unknown; status?: unknown };
+  };
+  const status = candidate.status
+    ?? candidate.statusCode
+    ?? candidate.code
+    ?? candidate.error?.code;
+  const message = [
+    candidate.message,
+    candidate.error?.message,
+    candidate.error?.status,
+  ].filter(value => typeof value === "string").join(" ");
+
+  return Number(status) === 503
+    || /503|service unavailable|unavailable|retryable|fetch failed|network|econnreset|etimedout/i.test(message);
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function dateKey(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function referenceDate(selectedDate?: string) {
+  if (selectedDate && /^\d{4}-\d{2}-\d{2}$/.test(selectedDate)) {
+    return new Date(`${selectedDate}T12:00:00`);
+  }
+  return new Date();
+}
+
+function addDays(date: Date, days: number) {
+  return new Date(new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime() + days * DAY_MS);
+}
+
+function localDateForText(text: string, selectedDate?: string) {
+  const base = referenceDate(selectedDate);
+  if (/(?:بعد\s+(?:بكرة|بكرا)|عقب\s+(?:بكرة|بكرا))/i.test(text)) return dateKey(addDays(base, 2));
+  if (/(?:بكرة|بكرا|غداً|غدا|tomorrow)/i.test(text)) return dateKey(addDays(base, 1));
+  if (/(?:بعد\s+أسبوعين|بعد\s+اسبوعين|in\s+two\s+weeks)/i.test(text)) return dateKey(addDays(base, 14));
+  if (/(?:بعد\s+أسبوع|بعد\s+اسبوع|الأسبوع\s+(?:الجاي|القادم)|الاسبوع\s+(?:الجاي|القادم)|next\s+week|in\s+a\s+week)/i.test(text)) return dateKey(addDays(base, 7));
+  if (/(?:بعد\s+شهر|الشهر\s+(?:الجاي|القادم)|next\s+month)/i.test(text)) {
+    const date = new Date(base);
+    date.setMonth(date.getMonth() + 1);
+    return dateKey(date);
+  }
+
+  const dayOnly = text.match(/(?:بتاريخ\s*)?(\d{1,2})(?!\s*:)/);
+  if (dayOnly) {
+    const day = Number(dayOnly[1]);
+    const date = new Date(base.getFullYear(), base.getMonth(), day);
+    if (day >= 1 && day <= 31 && date.getMonth() === base.getMonth()) return dateKey(date);
+  }
+
+  return selectedDate && /^\d{4}-\d{2}-\d{2}$/.test(selectedDate) ? selectedDate : dateKey(base);
+}
+
+function localTimeForText(text: string) {
+  const match = text.match(/(?:الساعة|ساعه|at)\s*(\d{1,2})(?::(\d{1,2}))?\s*(ص|م|am|pm|صباحاً|صباحا|مساءً|مساء)?/i);
+  if (!match) return undefined;
+  let hour = Number(match[1]);
+  const minute = Number(match[2] || 0);
+  const marker = String(match[3] || "").toLowerCase();
+  if ((marker === "م" || marker === "pm" || marker.startsWith("مساء")) && hour < 12) hour += 12;
+  if ((marker === "ص" || marker === "am" || marker.startsWith("صباح")) && hour === 12) hour = 0;
+  if (hour > 23 || minute > 59) return undefined;
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+function localTitleForText(text: string) {
+  return text
+    .replace(/(?:بعد\s+(?:بكرة|بكرا)|عقب\s+(?:بكرة|بكرا)|بكرة|بكرا|غداً|غدا|tomorrow)/gi, "")
+    .replace(/(?:بعد\s+أسبوعين|بعد\s+اسبوعين|بعد\s+أسبوع|بعد\s+اسبوع|الأسبوع\s+(?:الجاي|القادم)|الاسبوع\s+(?:الجاي|القادم)|in\s+two\s+weeks|next\s+week|in\s+a\s+week)/gi, "")
+    .replace(/(?:بعد\s+شهر|الشهر\s+(?:الجاي|القادم)|next\s+month)/gi, "")
+    .replace(/(?:الساعة|ساعه|at)\s*\d{1,2}(?::\d{1,2})?\s*(?:ص|م|am|pm|صباحاً|صباحا|مساءً|مساء)?/gi, "")
+    .replace(/(?:بتاريخ\s*)?\d{1,2}(?!\s*:)/g, "")
+    .replace(/^\s*(?:عندي|لدي|ذكرني|ذكّرني|تذكير|i\s+have|remind\s+me\s+to)\s*/i, "")
+    .replace(/\s+/g, " ")
+    .replace(/^[،,\s]+|[،,\s]+$/g, "")
+    .trim();
+}
+
+export function parseTasksLocally(message: string, language: "ar" | "en", selectedDate?: string) {
+  const normalized = message.trim();
+  if (!normalized) return null;
+  const hasTaskCue = /(?:عندي|لدي|ذكرني|ذكّرني|تذكير|موعد|اجتماع|مكالمة|تمرين|بكرة|بكرا|بعد|بتاريخ|الساعة|today|tomorrow|meeting|call|remind|task|appointment|next|on\s+\w+)/i.test(normalized);
+  if (!hasTaskCue) return null;
+  const parts = normalized
+    .split(/\s*(?:،|,| و(?=(?:بعد|بكرة|بكرا|بتاريخ|عندي|لدي|موعد|اجتماع|مكالمة|تمرين|روح|اذهب))| and (?=(?:tomorrow|next|on|i have|call|meeting)))\s*/i)
+    .map(part => part.trim())
+    .filter(Boolean);
+  const candidates = parts.length > 1 ? parts : [normalized];
+  const tasks = candidates
+    .map(part => {
+      const title = localTitleForText(part) || part;
+      if (title.length < 2) return null;
+      return {
+        title,
+        category: "other" as const,
+        priority: "medium" as const,
+        date: localDateForText(part, selectedDate),
+        time: localTimeForText(part),
+        id: globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2, 11),
+        completed: false,
+        createdAt: new Date().toISOString(),
+      };
+    })
+    .filter((task): task is NonNullable<typeof task> => Boolean(task));
+
+  if (tasks.length === 0) return null;
+  return {
+    reply: language === "en" ? "Done, I saved it locally." : "تم، حفظتها لك.",
+    tasks,
+    source: "local",
+  };
+}
+
 export async function parseTasksWithGemini(
   message: string,
   language: "ar" | "en",
