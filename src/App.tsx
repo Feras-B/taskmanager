@@ -265,9 +265,12 @@ const translations = {
     noSpecificTime: 'بدون وقت محدد',
     completeEvent: 'إكمال الموعد',
     deleteEvent: 'حذف الموعد',
-    listening: 'جاري الاستماع...',
-    recording: 'جاري التسجيل...',
+    listening: 'جاري التسجيل... تكلم براحتك واضغط إيقاف لما تخلص',
+    recording: 'جاري التسجيل... تكلم براحتك واضغط إيقاف لما تخلص',
+    hearingNow: 'أسمعك الآن...',
+    liveTranscript: 'النص المباشر',
     processingVoice: 'جاري تحويل الصوت...',
+    stopRecording: 'إيقاف',
     cancelRecording: 'إلغاء التسجيل',
     safariVoiceHint: 'اضغط تسجيل، تكلم، ثم اضغط إيقاف.',
     recordLonger: 'اضغط وسجل كلامك، ثم اضغط إيقاف.',
@@ -278,7 +281,9 @@ const translations = {
     speechDenied: 'تم رفض إذن الميكروفون. فضلاً فعّل الميكروفون من إعدادات المتصفح.',
     speechNoSpeech: 'لم أسمع أي كلام. حاول مرة أخرى وتحدث بالقرب من الميكروفون.',
     speechUnclear: 'لم أتمكن من فهم الكلام بوضوح. حاول مرة أخرى.',
-    transcriptionFailed: 'ما قدرت أسمعك بوضوح، تقدر تكتب المهمة.',
+    transcriptionFailed: 'ما وصلني صوت واضح، جرّب مرة ثانية أو اكتب المهمة.',
+    mobileMicDenied: 'فعّل صلاحية المايك من إعدادات المتصفح.',
+    voiceQuotaReached: 'وصلنا للحد المجاني مؤقتًا، تقدر تكتب المهمة.',
     eventSaved: 'تم حفظ الموعد ضمن المواعيد القادمة.',
     reminder: 'التذكير',
     noReminder: 'بدون تذكير',
@@ -390,9 +395,12 @@ const translations = {
     noSpecificTime: 'No specific time',
     completeEvent: 'Complete event',
     deleteEvent: 'Delete event',
-    listening: 'Listening...',
-    recording: 'Recording...',
+    listening: "Recording... speak freely and tap Stop when you're done",
+    recording: "Recording... speak freely and tap Stop when you're done",
+    hearingNow: 'I can hear you now...',
+    liveTranscript: 'Live transcript',
     processingVoice: 'Converting voice...',
+    stopRecording: 'Stop',
     cancelRecording: 'Cancel recording',
     safariVoiceHint: 'Tap record, speak, then stop.',
     recordLonger: 'Record your voice, then tap stop.',
@@ -403,7 +411,9 @@ const translations = {
     speechDenied: 'Microphone permission was denied. Please allow microphone access from browser settings.',
     speechNoSpeech: 'I did not hear anything. Please try again and speak closer to the microphone.',
     speechUnclear: 'I could not understand the speech clearly. Please try again.',
-    transcriptionFailed: "I couldn't hear clearly. You can type the task.",
+    transcriptionFailed: "I did not get clear audio. Try again or type the task.",
+    mobileMicDenied: 'Allow microphone access from your browser settings.',
+    voiceQuotaReached: 'Temporary free limit reached. You can type the task.',
     eventSaved: 'The event was saved under upcoming events.',
     reminder: 'Reminder',
     noReminder: 'No reminder',
@@ -582,6 +592,7 @@ export default function App() {
   const [isListening, setIsListening] = useState(false);
   const [voiceState, setVoiceState] = useState<VoiceState>('idle');
   const [voiceTextReady, setVoiceTextReady] = useState(false);
+  const [liveVoiceText, setLiveVoiceText] = useState('');
   const [speechError, setSpeechError] = useState('');
   const [notificationMessage, setNotificationMessage] = useState('');
   const [reminderToast, setReminderToast] = useState('');
@@ -607,6 +618,7 @@ export default function App() {
   const [taskSavedToast, setTaskSavedToast] = useState('');
   const [activeSection, setActiveSection] = useState<AppSection>('dashboard');
   const [mobileView, setMobileView] = useState<MobileView>('chat');
+  const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
   const [calendarView, setCalendarView] = useState<CalendarViewMode>('week');
   const [selectedDate, setSelectedDate] = useState(todayKey);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -621,6 +633,7 @@ export default function App() {
   const speechTimeoutRef = useRef<number | null>(null);
   const speechHandledRef = useRef(false);
   const speechManualStopRef = useRef(false);
+  const speechRestartCountRef = useRef(0);
   const speechTranscriptRef = useRef('');
   const t = translations[language];
   const isSafariOrIOS = /iP(?:hone|ad|od)|Safari/i.test(navigator.userAgent)
@@ -1384,6 +1397,7 @@ export default function App() {
     if (!audio.size) {
       setSpeechError(t.transcriptionFailed);
       setVoiceState('error');
+      setLiveVoiceText('');
       return;
     }
 
@@ -1402,6 +1416,7 @@ export default function App() {
           ? `${current.trim()} ${cachedTranscript}`
           : cachedTranscript);
         setVoiceTextReady(true);
+        setLiveVoiceText('');
         setVoiceState('idle');
         return;
       }
@@ -1409,6 +1424,7 @@ export default function App() {
       if (!consumeAiCall()) {
         setSpeechError(t.usageLimitReached);
         setVoiceState('error');
+        setLiveVoiceText('');
         return;
       }
 
@@ -1420,13 +1436,15 @@ export default function App() {
         },
         body: audio,
       });
+      console.info('[voice] transcription response status:', response.status);
       const data = await response.json() as { text?: unknown; error?: unknown };
       const transcript = safeMessageText(data.text).trim();
 
       if (!response.ok || !transcript) {
         if (response.status === 429) {
-          setSpeechError(t.quotaReached);
+          setSpeechError(t.voiceQuotaReached);
           setVoiceState('error');
+          setLiveVoiceText('');
           return;
         }
         throw new Error(safeMessageText(data.error) || 'Audio transcription failed');
@@ -1442,16 +1460,20 @@ export default function App() {
       );
       setInputValue(current => current.trim() ? `${current.trim()} ${transcript}` : transcript);
       setVoiceTextReady(true);
+      setLiveVoiceText('');
       setVoiceState('idle');
     } catch (error) {
       console.error('Audio transcription failed:', error);
       setSpeechError(t.transcriptionFailed);
       setVoiceState('error');
+      setLiveVoiceText('');
     }
   };
 
   const startMediaRecording = async () => {
-    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+    const mediaRecorderSupported = typeof MediaRecorder !== 'undefined';
+    console.info('[voice] media recorder supported:', mediaRecorderSupported);
+    if (!navigator.mediaDevices?.getUserMedia || !mediaRecorderSupported) {
       setSpeechError(t.voiceFallback);
       setVoiceState('error');
       return;
@@ -1459,11 +1481,13 @@ export default function App() {
 
     setVoiceState('processing');
     setSpeechError('');
+    setLiveVoiceText('');
     recordingCancelledRef.current = false;
     audioChunksRef.current = [];
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      console.info('[voice] microphone permission granted');
       mediaStreamRef.current = stream;
       const supportedType = [
         'audio/mp4',
@@ -1483,11 +1507,13 @@ export default function App() {
         stopMediaStream();
         mediaRecorderRef.current = null;
         setSpeechError(t.voiceFallback);
+        setLiveVoiceText('');
         setVoiceState('error');
       };
       recorder.onstart = () => {
         recordingStartedAtRef.current = Date.now();
         setVoiceState('recording');
+        setLiveVoiceText('');
         setSpeechError('');
       };
       recorder.onstop = () => {
@@ -1501,22 +1527,32 @@ export default function App() {
 
         if (wasCancelled) {
           setVoiceState('idle');
+          setLiveVoiceText('');
           return;
         }
 
         if (recordingDuration < 1_000) {
           setSpeechError(t.recordLonger);
           setVoiceState('error');
+          setLiveVoiceText('');
           return;
         }
 
-        void transcribeRecordedAudio(new Blob(chunks, { type: mimeType }));
+        const audioBlob = new Blob(chunks, { type: mimeType });
+        console.info('[voice] audio blob:', {
+          size: audioBlob.size,
+          type: audioBlob.type,
+        });
+        void transcribeRecordedAudio(audioBlob);
       };
       recorder.start(250);
     } catch (error) {
-      console.error('Microphone recording failed:', error);
+      const errorName = error instanceof DOMException ? error.name : '';
+      const permissionDenied = errorName === 'NotAllowedError' || errorName === 'SecurityError';
+      console.warn('[voice] microphone permission denied/error:', error);
       stopMediaStream();
-      setSpeechError(t.voiceFallback);
+      setSpeechError(permissionDenied ? t.mobileMicDenied : t.voiceFallback);
+      setLiveVoiceText('');
       setVoiceState('error');
     }
   };
@@ -1546,6 +1582,8 @@ export default function App() {
     speechManualStopRef.current = true;
     speechHandledRef.current = true;
     speechTranscriptRef.current = '';
+    speechRestartCountRef.current = 0;
+    setLiveVoiceText('');
     clearSpeechTimeout();
     recognitionRef.current?.stop();
     recognitionRef.current = null;
@@ -1557,6 +1595,11 @@ export default function App() {
   const toggleListening = async () => {
     if (isListening || voiceState === 'recording') {
       stopVoiceInput();
+      return;
+    }
+
+    if (isSafariOrIOS) {
+      await startMediaRecording();
       return;
     }
 
@@ -1573,8 +1616,10 @@ export default function App() {
 
     setSpeechError('');
     setVoiceState('processing');
+    setLiveVoiceText('');
     speechHandledRef.current = false;
     speechManualStopRef.current = false;
+    speechRestartCountRef.current = 0;
     speechTranscriptRef.current = '';
 
     if (navigator.mediaDevices?.getUserMedia) {
@@ -1588,6 +1633,7 @@ export default function App() {
             ? t.speechDenied
             : t.voiceFallback
         );
+        setLiveVoiceText('');
         setVoiceState('error');
         return;
       }
@@ -1596,28 +1642,32 @@ export default function App() {
     const recognition = new Recognition();
     recognition.lang = language === 'ar' ? 'ar-SA' : 'en-US';
     recognition.continuous = true;
-    recognition.interimResults = false;
+    recognition.interimResults = true;
     recognition.onstart = () => {
       setIsListening(true);
       setVoiceState('listening');
       setSpeechError('');
       clearSpeechTimeout();
       speechTimeoutRef.current = window.setTimeout(() => {
-        if (speechHandledRef.current) return;
+        if (speechHandledRef.current || speechTranscriptRef.current.trim()) return;
         speechHandledRef.current = true;
+        speechManualStopRef.current = true;
         setSpeechError(t.speechNoSpeech);
         setIsListening(false);
+        setLiveVoiceText('');
         setVoiceState('error');
         recognition.stop();
-      }, 8_000);
+      }, 30_000);
     };
     recognition.onresult = event => {
       clearSpeechTimeout();
       const finalSegments: string[] = [];
+      const interimSegments: string[] = [];
       for (let index = event.resultIndex; index < event.results.length; index += 1) {
         const result = event.results[index];
         const transcript = result?.[0]?.transcript?.trim();
         if (result?.isFinal && transcript) finalSegments.push(transcript);
+        if (!result?.isFinal && transcript) interimSegments.push(transcript);
       }
 
       if (finalSegments.length > 0) {
@@ -1628,6 +1678,11 @@ export default function App() {
         ].filter(Boolean).join(' ').trim();
         setSpeechError('');
       }
+      const visibleTranscript = [
+        speechTranscriptRef.current,
+        ...interimSegments,
+      ].filter(Boolean).join(' ').trim();
+      setLiveVoiceText(visibleTranscript);
     };
     recognition.onerror = event => {
       clearSpeechTimeout();
@@ -1637,15 +1692,21 @@ export default function App() {
       speechHandledRef.current = true;
       if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
         if (event.error === 'not-allowed') {
+          speechManualStopRef.current = true;
           setSpeechError(t.speechDenied);
+          setLiveVoiceText('');
           setVoiceState('error');
         } else {
+          speechManualStopRef.current = true;
           void startMediaRecording();
         }
       } else if (event.error === 'no-speech') {
+        speechManualStopRef.current = true;
         setSpeechError(t.speechNoSpeech);
+        setLiveVoiceText('');
         setVoiceState('error');
       } else {
+        speechManualStopRef.current = true;
         void startMediaRecording();
       }
     };
@@ -1655,9 +1716,33 @@ export default function App() {
       recognitionRef.current = null;
       const transcript = speechTranscriptRef.current.trim();
 
+      if (!speechManualStopRef.current && speechRestartCountRef.current < 12) {
+        speechRestartCountRef.current += 1;
+        window.setTimeout(() => {
+          if (speechManualStopRef.current) return;
+          try {
+            recognitionRef.current = recognition;
+            recognition.start();
+          } catch {
+            if (transcript) {
+              setInputValue(current => current.trim() ? `${current.trim()} ${transcript}` : transcript);
+              speechTranscriptRef.current = '';
+              setLiveVoiceText('');
+              setSpeechError('');
+              setVoiceTextReady(true);
+              setVoiceState('idle');
+            } else {
+              void startMediaRecording();
+            }
+          }
+        }, 300);
+        return;
+      }
+
       if (transcript) {
         setInputValue(current => current.trim() ? `${current.trim()} ${transcript}` : transcript);
         speechTranscriptRef.current = '';
+        setLiveVoiceText('');
         setSpeechError('');
         setVoiceTextReady(true);
         setVoiceState('idle');
@@ -1667,8 +1752,10 @@ export default function App() {
       if (!speechHandledRef.current && !speechManualStopRef.current) {
         speechHandledRef.current = true;
         setSpeechError(t.speechNoSpeech);
+        setLiveVoiceText('');
         setVoiceState('error');
       } else if (speechManualStopRef.current) {
+        setLiveVoiceText('');
         setVoiceState('idle');
       }
     };
@@ -1681,6 +1768,7 @@ export default function App() {
       clearSpeechTimeout();
       speechHandledRef.current = true;
       setIsListening(false);
+      setLiveVoiceText('');
       await startMediaRecording();
     }
   };
@@ -1740,15 +1828,20 @@ export default function App() {
         <nav className="flex flex-col gap-8 flex-1">
           <button
             onClick={() => setActiveSection('dashboard')}
-            className={`p-3 rounded-2xl transition-colors ${activeSection === 'dashboard' ? 'text-primary bg-primary/10 dark:bg-primary/15' : 'text-zinc-400 hover:text-zinc-600 dark:text-zinc-500 dark:hover:text-zinc-200'}`}
+            className={`group relative p-3 rounded-2xl transition-colors ${activeSection === 'dashboard' ? 'text-primary bg-primary/10 dark:bg-primary/15' : 'text-zinc-400 hover:text-zinc-600 dark:text-zinc-500 dark:hover:text-zinc-200'}`}
             title={t.taskList}
+            aria-label={t.taskList}
           >
             <LayoutDashboard size={24} />
+            <span className={`pointer-events-none absolute top-1/2 z-50 -translate-y-1/2 whitespace-nowrap rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs font-bold text-zinc-700 opacity-0 shadow-lg shadow-black/10 transition-opacity group-hover:opacity-100 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 ${language === 'ar' ? 'right-full mr-3' : 'left-full ml-3'}`}>
+              {t.taskList}
+            </span>
           </button>
           <button
             onClick={() => setActiveSection('trash')}
-            className={`relative p-3 rounded-2xl transition-colors ${activeSection === 'trash' ? 'text-primary bg-primary/10 dark:bg-primary/15' : 'text-zinc-400 hover:text-zinc-600 dark:text-zinc-500 dark:hover:text-zinc-200'}`}
+            className={`group relative p-3 rounded-2xl transition-colors ${activeSection === 'trash' ? 'text-primary bg-primary/10 dark:bg-primary/15' : 'text-zinc-400 hover:text-zinc-600 dark:text-zinc-500 dark:hover:text-zinc-200'}`}
             title={t.trash}
+            aria-label={t.trash}
           >
             <Trash2 size={24} />
             {trashedTasks.length > 0 && (
@@ -1756,39 +1849,150 @@ export default function App() {
                 {trashedTasks.length}
               </span>
             )}
+            <span className={`pointer-events-none absolute top-1/2 z-50 -translate-y-1/2 whitespace-nowrap rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs font-bold text-zinc-700 opacity-0 shadow-lg shadow-black/10 transition-opacity group-hover:opacity-100 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 ${language === 'ar' ? 'right-full mr-3' : 'left-full ml-3'}`}>
+              {t.trash}
+            </span>
           </button>
           <button
             onClick={toggleTheme}
-            className="p-3 text-zinc-400 hover:text-zinc-600 rounded-2xl transition-colors dark:text-zinc-500 dark:hover:text-zinc-200"
+            className="group relative p-3 text-zinc-400 hover:text-zinc-600 rounded-2xl transition-colors dark:text-zinc-500 dark:hover:text-zinc-200"
             title={isDarkMode ? t.lightMode : t.darkMode}
+            aria-label={isDarkMode ? t.lightMode : t.darkMode}
           >
             {isDarkMode ? <Sun size={24} /> : <Moon size={24} />}
+            <span className={`pointer-events-none absolute top-1/2 z-50 -translate-y-1/2 whitespace-nowrap rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs font-bold text-zinc-700 opacity-0 shadow-lg shadow-black/10 transition-opacity group-hover:opacity-100 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 ${language === 'ar' ? 'right-full mr-3' : 'left-full ml-3'}`}>
+              {isDarkMode ? t.lightMode : t.darkMode}
+            </span>
           </button>
           <button
             onClick={toggleLanguage}
-            className="p-3 text-zinc-400 hover:text-zinc-600 rounded-2xl transition-colors dark:text-zinc-500 dark:hover:text-zinc-200"
+            className="group relative p-3 text-zinc-400 hover:text-zinc-600 rounded-2xl transition-colors dark:text-zinc-500 dark:hover:text-zinc-200"
             title={t.changeLanguage}
+            aria-label={t.changeLanguage}
           >
             <Languages size={24} />
+            <span className={`pointer-events-none absolute top-1/2 z-50 -translate-y-1/2 whitespace-nowrap rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs font-bold text-zinc-700 opacity-0 shadow-lg shadow-black/10 transition-opacity group-hover:opacity-100 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 ${language === 'ar' ? 'right-full mr-3' : 'left-full ml-3'}`}>
+              {t.changeLanguage}
+            </span>
           </button>
         </nav>
       </aside>
 
       {/* Main Content */}
-      <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden md:flex-row">
+      <main className={`relative flex min-w-0 flex-1 flex-col overflow-hidden transition-[padding] duration-200 ease-out md:flex-row md:pr-0 ${
+        mobileDrawerOpen ? 'pr-36' : 'pr-16'
+      }`}>
         
         {/* Mobile Header */}
-        <div className="flex min-h-14 shrink-0 items-center border-b border-zinc-100 bg-white px-4 py-2 transition-colors dark:border-zinc-800 dark:bg-zinc-900 md:hidden">
-          <div className="flex items-center gap-2.5">
+        <div className="relative z-50 flex min-h-14 shrink-0 items-center justify-center border-b border-zinc-100 bg-white px-4 py-2 transition-colors dark:border-zinc-800 dark:bg-zinc-900 md:hidden">
+          <div className="flex min-w-0 items-center gap-2.5">
             <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-white">
               <ListChecks size={18} />
             </span>
-            <span className="font-bold">{t.appName}</span>
+            <span className="truncate font-bold">{t.appName}</span>
           </div>
         </div>
+        <nav
+          className={`fixed bottom-0 right-0 top-14 z-40 border-l border-zinc-200 bg-white/95 p-2 shadow-[-8px_0_24px_rgba(0,0,0,0.06)] backdrop-blur-xl transition-[width] duration-200 ease-out dark:border-zinc-800 dark:bg-zinc-900/95 md:hidden ${
+            mobileDrawerOpen ? 'w-36' : 'w-16'
+          }`}
+          aria-label={language === 'ar' ? 'التنقل الرئيسي' : 'Main navigation'}
+        >
+          <div className="flex flex-col gap-1">
+            <button
+              onClick={() => setMobileDrawerOpen(open => !open)}
+              className={`flex min-h-11 w-full items-center rounded-xl text-sm font-bold transition-colors ${
+                mobileDrawerOpen
+                  ? 'justify-start gap-2 bg-primary px-3 text-white shadow-md shadow-primary/15'
+                  : 'justify-center text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800'
+              }`}
+              aria-label={mobileDrawerOpen ? 'إغلاق' : 'القائمة'}
+              aria-expanded={mobileDrawerOpen}
+            >
+              <span className="text-lg leading-none">{mobileDrawerOpen ? '×' : '☰'}</span>
+              {mobileDrawerOpen && <span className="whitespace-nowrap text-xs">إغلاق</span>}
+            </button>
+            {[
+              { id: 'chat' as const, label: t.mobileChat, icon: MessageSquare },
+              { id: 'tasks' as const, label: t.mobileTasks, icon: CheckCircle2 },
+              { id: 'calendar' as const, label: t.mobileCalendar, icon: Calendar },
+            ].map(item => {
+              const Icon = item.icon;
+              const active = mobileView === item.id && activeSection === 'dashboard';
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => {
+                    setActiveSection('dashboard');
+                    setMobileView(item.id);
+                  }}
+                  className={`flex min-h-11 w-full items-center rounded-xl text-xs font-bold transition-colors ${
+                    active
+                      ? 'bg-primary text-white shadow-md shadow-primary/15'
+                      : 'text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100'
+                  } ${mobileDrawerOpen ? 'justify-start gap-2 px-3' : 'justify-center px-0'}`}
+                  title={item.label}
+                  aria-label={item.label}
+                >
+                  <Icon size={17} className="shrink-0" />
+                  <span className={`whitespace-nowrap transition-opacity duration-150 ${
+                    mobileDrawerOpen ? 'opacity-100' : 'sr-only opacity-0'
+                  }`}
+                  >
+                    {item.label}
+                  </span>
+                </button>
+              );
+            })}
+            <button
+              onClick={() => {
+                openManualTaskForm();
+              }}
+              className={`flex min-h-11 w-full items-center rounded-xl bg-primary text-xs font-bold text-white shadow-md shadow-primary/15 transition-transform active:scale-95 ${
+                mobileDrawerOpen ? 'justify-start gap-2 px-3' : 'justify-center px-0'
+              }`}
+              title={t.mobileAdd}
+              aria-label={t.mobileAdd}
+            >
+              <Plus size={17} className="shrink-0" />
+              <span className={`whitespace-nowrap transition-opacity duration-150 ${
+                mobileDrawerOpen ? 'opacity-100' : 'sr-only opacity-0'
+              }`}
+              >
+                {t.mobileAdd}
+              </span>
+            </button>
+            <button
+              onClick={() => {
+                setActiveSection('trash');
+                setMobileView('more');
+              }}
+              className={`relative flex min-h-11 w-full items-center rounded-xl text-xs font-bold transition-colors ${
+                mobileView === 'more' || activeSection === 'trash'
+                  ? 'bg-primary text-white shadow-md shadow-primary/15'
+                  : 'text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100'
+              } ${mobileDrawerOpen ? 'justify-start gap-2 px-3' : 'justify-center px-0'}`}
+              title={t.mobileMore}
+              aria-label={t.mobileMore}
+            >
+              <Settings size={17} className="shrink-0" />
+              <span className={`whitespace-nowrap transition-opacity duration-150 ${
+                mobileDrawerOpen ? 'opacity-100' : 'sr-only opacity-0'
+              }`}
+              >
+                {t.mobileMore}
+              </span>
+              {trashedTasks.length > 0 && (
+                <span className="absolute -end-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[9px] text-white">
+                  {trashedTasks.length}
+                </span>
+              )}
+            </button>
+          </div>
+        </nav>
 
         {/* Tasks Section */}
-        <section className={`${mobileView === 'chat' ? 'hidden md:block' : 'block'} min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden px-4 pb-28 pt-5 custom-scrollbar sm:px-6 md:p-6 lg:p-12`}>
+        <section className={`${mobileView === 'chat' ? 'hidden md:block' : 'block'} min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden px-4 pb-[calc(1rem+env(safe-area-inset-bottom))] pt-5 custom-scrollbar sm:px-6 md:p-6 lg:p-12`}>
           {activeSection === 'dashboard' ? (
             <>
               <header className="mb-5 flex flex-wrap items-start justify-between gap-3 sm:mb-6 sm:gap-4">
@@ -2131,15 +2335,15 @@ export default function App() {
             <div className="mt-3 grid grid-cols-3 gap-2">
               <button
                 onClick={() => startNewChat(false)}
-                className="flex min-h-11 min-w-0 items-center justify-center gap-1.5 rounded-lg bg-primary px-2 py-2 text-[11px] font-bold text-white transition-colors hover:bg-primary/90"
+                className="flex min-h-14 min-w-0 flex-col items-center justify-center gap-1 rounded-lg bg-primary px-1.5 py-2 text-[10px] font-bold text-white transition-colors hover:bg-primary/90 sm:min-h-11 sm:flex-row sm:gap-1.5 sm:px-2 sm:text-[11px]"
                 title={t.newChat}
               >
                 <Plus size={15} />
-                <span className="hidden truncate sm:inline">{t.newChat}</span>
+                <span className="max-w-full text-center leading-tight sm:truncate">{t.newChat}</span>
               </button>
               <button
                 onClick={() => startNewChat(true)}
-                className={`flex min-h-11 min-w-0 items-center justify-center gap-1.5 rounded-lg border px-2 py-2 text-[11px] font-bold transition-colors ${
+                className={`flex min-h-14 min-w-0 flex-col items-center justify-center gap-1 rounded-lg border px-1.5 py-2 text-[10px] font-bold transition-colors sm:min-h-11 sm:flex-row sm:gap-1.5 sm:px-2 sm:text-[11px] ${
                   temporaryChat
                     ? 'border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200'
                     : 'border-zinc-200 text-zinc-600 hover:border-amber-300 hover:text-amber-700 dark:border-zinc-700 dark:text-zinc-300'
@@ -2147,11 +2351,11 @@ export default function App() {
                 title={t.temporaryChat}
               >
                 <ShieldCheck size={15} />
-                <span className="hidden truncate sm:inline">{t.temporaryChat}</span>
+                <span className="max-w-full text-center leading-tight sm:truncate">{t.temporaryChat}</span>
               </button>
               <button
                 onClick={() => setShowChatHistory(current => !current)}
-                className={`flex min-h-11 min-w-0 items-center justify-center gap-1.5 rounded-lg border px-2 py-2 text-[11px] font-bold transition-colors ${
+                className={`flex min-h-14 min-w-0 flex-col items-center justify-center gap-1 rounded-lg border px-1.5 py-2 text-[10px] font-bold transition-colors sm:min-h-11 sm:flex-row sm:gap-1.5 sm:px-2 sm:text-[11px] ${
                   showChatHistory
                     ? 'border-primary bg-primary/10 text-primary'
                     : 'border-zinc-200 text-zinc-600 hover:border-primary hover:text-primary dark:border-zinc-700 dark:text-zinc-300'
@@ -2159,7 +2363,7 @@ export default function App() {
                 title={t.chatHistory}
               >
                 <History size={15} />
-                <span className="hidden truncate sm:inline">{t.chatHistory}</span>
+                <span className="max-w-full text-center leading-tight sm:truncate">{t.chatHistory}</span>
               </button>
             </div>
           </div>
@@ -2289,7 +2493,7 @@ export default function App() {
             })}
           </div>
 
-          <div className="mb-[calc(4.5rem+env(safe-area-inset-bottom))] shrink-0 border-t border-zinc-100 bg-white p-3 transition-colors dark:border-zinc-800 dark:bg-zinc-900 sm:p-4 md:mb-0 md:p-6">
+          <div className="shrink-0 border-t border-zinc-100 bg-white p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] transition-colors dark:border-zinc-800 dark:bg-zinc-900 sm:p-4 sm:pb-4 md:p-6">
             {chatFallbackText && (
               <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-500/20 dark:bg-amber-500/10">
                 <p className="text-xs font-medium text-amber-800 dark:text-amber-200">{t.chatFallback}</p>
@@ -2352,18 +2556,46 @@ export default function App() {
               </button>
             </div>
             {(isListening || voiceState === 'recording') && (
-              <div className="mt-2 flex min-h-11 items-center justify-between gap-3 rounded-lg bg-red-50 px-3 text-xs font-semibold text-red-600 dark:bg-red-500/10 dark:text-red-300">
-                <span className="flex items-center gap-2">
-                  <span className="h-2 w-2 animate-pulse rounded-full bg-red-500" />
-                  {voiceState === 'recording' ? t.recording : t.listening}
-                </span>
-                <button
-                  onClick={cancelListening}
-                  className="flex min-h-9 items-center gap-1 rounded-md px-2 text-xs font-bold hover:bg-red-100 dark:hover:bg-red-500/10"
-                >
-                  <X size={15} />
-                  {t.cancelRecording}
-                </button>
+              <div className="mt-2 rounded-lg bg-red-50 p-3 text-xs font-semibold text-red-600 dark:bg-red-500/10 dark:text-red-300">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <span className="flex items-center gap-2">
+                      <span className="h-2 w-2 animate-pulse rounded-full bg-red-500" />
+                      {voiceState === 'recording' ? t.recording : t.listening}
+                    </span>
+                    {liveVoiceText ? (
+                      <div className="mt-2 rounded-md bg-white/70 px-3 py-2 text-[13px] font-medium leading-relaxed text-zinc-700 shadow-sm dark:bg-zinc-950/40 dark:text-zinc-100" dir={language === 'ar' ? 'rtl' : 'ltr'}>
+                        <span className="mb-1 block text-[10px] font-bold uppercase text-red-400 dark:text-red-300">
+                          {t.liveTranscript}
+                        </span>
+                        <span className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{liveVoiceText}</span>
+                      </div>
+                    ) : (
+                      <div className="mt-2 flex items-center gap-1.5 text-[11px] text-red-500/80 dark:text-red-200">
+                        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-red-400" />
+                        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-red-400 [animation-delay:150ms]" />
+                        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-red-400 [animation-delay:300ms]" />
+                        <span className="ms-1">{t.hearingNow}</span>
+                      </div>
+                    )}
+                  </div>
+                  <span className="flex shrink-0 flex-col items-stretch gap-1 min-[390px]:flex-row">
+                    <button
+                      onClick={stopVoiceInput}
+                      className="flex min-h-10 items-center justify-center gap-1 rounded-md bg-red-100 px-2 text-xs font-bold dark:bg-red-500/15"
+                    >
+                      <Square size={12} fill="currentColor" />
+                      {t.stopRecording}
+                    </button>
+                    <button
+                      onClick={cancelListening}
+                      className="flex min-h-10 items-center justify-center gap-1 rounded-md px-2 text-xs font-bold hover:bg-red-100 dark:hover:bg-red-500/10"
+                    >
+                      <X size={15} />
+                      {t.cancel}
+                    </button>
+                  </span>
+                </div>
               </div>
             )}
             {voiceState === 'processing' && (
@@ -2388,61 +2620,6 @@ export default function App() {
           </div>
         </section>
 
-        <nav
-          className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-5 border-t border-zinc-200 bg-white/95 px-1 pt-1 backdrop-blur-xl dark:border-zinc-800 dark:bg-zinc-900/95 md:hidden"
-          style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
-          aria-label={language === 'ar' ? 'التنقل الرئيسي' : 'Main navigation'}
-        >
-          {[
-            { id: 'chat' as const, label: t.mobileChat, icon: MessageSquare },
-            { id: 'tasks' as const, label: t.mobileTasks, icon: CheckCircle2 },
-            { id: 'calendar' as const, label: t.mobileCalendar, icon: Calendar },
-          ].map(item => {
-            const Icon = item.icon;
-            const active = mobileView === item.id;
-            return (
-              <button
-                key={item.id}
-                onClick={() => {
-                  setActiveSection('dashboard');
-                  setMobileView(item.id);
-                }}
-                className={`relative flex min-h-16 min-w-0 flex-col items-center justify-center gap-1 px-1 text-[10px] font-semibold transition-colors ${
-                  active ? 'text-primary' : 'text-zinc-400 dark:text-zinc-500'
-                }`}
-              >
-                <Icon size={21} />
-                <span className="max-w-full truncate">{item.label}</span>
-              </button>
-            );
-          })}
-          <button
-            onClick={() => openManualTaskForm()}
-            className="flex min-h-16 min-w-0 flex-col items-center justify-center gap-1 px-1 text-[10px] font-semibold text-primary"
-          >
-            <span className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-white shadow-md shadow-primary/20">
-              <Plus size={19} />
-            </span>
-            <span className="max-w-full truncate">{t.mobileAdd}</span>
-          </button>
-          <button
-            onClick={() => {
-              setActiveSection('trash');
-              setMobileView('more');
-            }}
-            className={`relative flex min-h-16 min-w-0 flex-col items-center justify-center gap-1 px-1 text-[10px] font-semibold transition-colors ${
-              mobileView === 'more' ? 'text-primary' : 'text-zinc-400 dark:text-zinc-500'
-            }`}
-          >
-            <Settings size={21} />
-            <span className="max-w-full truncate">{t.mobileMore}</span>
-            {trashedTasks.length > 0 && (
-              <span className="absolute end-[22%] top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[9px] text-white">
-                {trashedTasks.length}
-              </span>
-            )}
-          </button>
-        </nav>
       </main>
       <AnimatePresence>
         {reminderToast && (
@@ -2450,7 +2627,7 @@ export default function App() {
             initial={{ opacity: 0, y: 20, scale: 0.98 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 12, scale: 0.98 }}
-            className={`fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] z-50 flex max-w-[calc(100vw-2rem)] items-center gap-3 rounded-lg border border-zinc-200 bg-white px-4 py-3 shadow-xl shadow-black/10 dark:border-zinc-700 dark:bg-zinc-800 md:bottom-5 ${
+            className={`fixed bottom-[calc(1rem+env(safe-area-inset-bottom))] z-50 flex max-w-[calc(100vw-2rem)] items-center gap-3 rounded-lg border border-zinc-200 bg-white px-4 py-3 shadow-xl shadow-black/10 dark:border-zinc-700 dark:bg-zinc-800 md:bottom-5 ${
               language === 'ar' ? 'right-5' : 'left-5'
             }`}
             role="alert"
@@ -2477,7 +2654,7 @@ export default function App() {
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 12 }}
-            className={`fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] z-50 flex max-w-[calc(100vw-2rem)] items-center gap-3 rounded-lg border border-zinc-200 bg-white px-4 py-3 shadow-xl shadow-black/10 dark:border-zinc-700 dark:bg-zinc-800 md:bottom-5 ${
+            className={`fixed bottom-[calc(1rem+env(safe-area-inset-bottom))] z-50 flex max-w-[calc(100vw-2rem)] items-center gap-3 rounded-lg border border-zinc-200 bg-white px-4 py-3 shadow-xl shadow-black/10 dark:border-zinc-700 dark:bg-zinc-800 md:bottom-5 ${
               language === 'ar' ? 'left-5' : 'right-5'
             }`}
             role="status"
@@ -2499,7 +2676,7 @@ export default function App() {
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 12 }}
-            className={`fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] z-50 flex max-w-[calc(100vw-2rem)] items-center gap-3 rounded-lg border border-zinc-200 bg-white px-4 py-3 shadow-xl shadow-black/10 dark:border-zinc-700 dark:bg-zinc-800 md:bottom-20 ${
+            className={`fixed bottom-[calc(1rem+env(safe-area-inset-bottom))] z-50 flex max-w-[calc(100vw-2rem)] items-center gap-3 rounded-lg border border-zinc-200 bg-white px-4 py-3 shadow-xl shadow-black/10 dark:border-zinc-700 dark:bg-zinc-800 md:bottom-20 ${
               language === 'ar' ? 'right-5' : 'left-5'
             }`}
             role="status"
@@ -2522,7 +2699,7 @@ export default function App() {
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 12 }}
-            className={`fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] z-50 flex max-w-[calc(100vw-2rem)] items-center gap-3 rounded-lg border border-emerald-200 bg-white px-4 py-3 shadow-xl shadow-black/10 dark:border-emerald-500/20 dark:bg-zinc-800 md:bottom-20 ${
+            className={`fixed bottom-[calc(1rem+env(safe-area-inset-bottom))] z-50 flex max-w-[calc(100vw-2rem)] items-center gap-3 rounded-lg border border-emerald-200 bg-white px-4 py-3 shadow-xl shadow-black/10 dark:border-emerald-500/20 dark:bg-zinc-800 md:bottom-20 ${
               language === 'ar' ? 'left-5' : 'right-5'
             }`}
             role="status"
