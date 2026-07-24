@@ -7,6 +7,7 @@ import {
   isGeminiServiceUnavailableError,
   parseTasksLocally,
   parseTasksWithGemini,
+  parseTasksWithOpenRouter,
 } from "./lib/taskParser";
 import { transcribeAudioWithGemini } from "./lib/audioTranscription";
 
@@ -26,38 +27,40 @@ app.post("/api/parse-tasks", async (req, res) => {
   }
 
   try {
+    const normalizedLanguage = language === "en" ? "en" : "ar";
+    const normalizedSelectedDate = typeof selectedDate === "string" ? selectedDate : undefined;
     const localResult = parseTasksLocally(
       message.trim(),
-      language === "en" ? "en" : "ar",
-      typeof selectedDate === "string" ? selectedDate : undefined,
+      normalizedLanguage,
+      normalizedSelectedDate,
     );
-    if (localResult) return res.json(localResult);
+    if (localResult) {
+      console.info("[parse-tasks] provider=local_parser");
+      return res.json(localResult);
+    }
 
-    const result = await parseTasksWithGemini(
-      message.trim(),
-      language === "en" ? "en" : "ar",
-      typeof selectedDate === "string" ? selectedDate : undefined,
-    );
-    res.json(result);
-  } catch (error) {
-    console.error("Gemini Error:", error);
-    if (isGeminiQuotaError(error)) {
-      return res.status(429).json({ error: "quota_exceeded" });
-    }
-    if (isGeminiServiceUnavailableError(error)) {
-      const localResult = parseTasksLocally(
+    try {
+      const result = await parseTasksWithGemini(
         message.trim(),
-        language === "en" ? "en" : "ar",
-        typeof selectedDate === "string" ? selectedDate : undefined,
+        normalizedLanguage,
+        normalizedSelectedDate,
       );
-      if (localResult) return res.json(localResult);
-      return res.status(503).json({ error: "service_unavailable" });
+      console.info("[parse-tasks] provider=gemini");
+      return res.json(result);
+    } catch (geminiError) {
+      console.error("Gemini Error:", geminiError);
+      const result = await parseTasksWithOpenRouter(
+        message.trim(),
+        normalizedLanguage,
+        normalizedSelectedDate,
+      );
+      console.info("[parse-tasks] provider=openrouter");
+      return res.json(result);
     }
-    res.status(500).json({
-      error: process.env.GEMINI_API_KEY
-        ? "Failed to process message"
-        : "GEMINI_API_KEY is not configured",
-    });
+  } catch (error) {
+    console.error("Task parse providers failed:", error);
+    console.info("[parse-tasks] provider=failed_all");
+    return res.status(503).json({ error: "service_unavailable" });
   }
 });
 

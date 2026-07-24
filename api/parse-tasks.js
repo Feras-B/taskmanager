@@ -43,6 +43,41 @@ function cleanVisibleReply(text, language) {
   return cleaned.length > 180 ? `${cleaned.slice(0, 177).trim()}...` : cleaned;
 }
 
+function parseModelText(text, language) {
+  const safeText = typeof text === "string" ? text : "";
+  const jsonMatch = safeText.match(/\{[\s\S]*\}/);
+  let tasks = [];
+  let cleanText = safeText;
+  let clarification = "";
+
+  if (jsonMatch) {
+    try {
+      const jsonData = JSON.parse(jsonMatch[0]);
+      tasks = Array.isArray(jsonData.tasks) ? jsonData.tasks : [];
+      clarification = typeof jsonData.clarification === "string"
+        ? jsonData.clarification.trim()
+        : "";
+      cleanText = safeText.replace(jsonMatch[0], "").trim();
+    } catch (error) {
+      console.error("Failed to parse JSON from AI response:", error);
+    }
+  }
+
+  const reply = clarification || (tasks.length > 0
+    ? language === "en" ? "Done, I organized it for you." : "أبشر، رتبتها لك."
+    : cleanVisibleReply(cleanText, language));
+
+  return {
+    reply,
+    tasks: tasks.map(task => ({
+      ...task,
+      id: globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2, 11),
+      completed: false,
+      createdAt: new Date().toISOString(),
+    })),
+  };
+}
+
 function isGeminiQuotaError(error) {
   if (!error || typeof error !== "object") return false;
   const status = error.status ?? error.statusCode ?? error.code ?? error.error?.code;
@@ -167,6 +202,92 @@ function parseTasksLocally(message, language, selectedDate) {
   };
 }
 
+async function parseTasksWithGemini(message, language, selectedDate) {
+  const configuredKey = process.env.GEMINI_API_KEY?.trim();
+  const apiKey = configuredKey?.replace(/^(["'])(.*)\1$/, "$2").trim();
+  if (!apiKey) {
+    throw new Error("GEMINI_API_KEY is not configured");
+  }
+
+  const ai = new GoogleGenAI({
+    apiKey,
+    httpOptions: {
+      headers: {
+        "User-Agent": "yomak-ai",
+      },
+      retryOptions: {
+        attempts: 1,
+      },
+    },
+  });
+
+  const response = await ai.models.generateContent({
+    model: "gemini-3-flash-preview",
+    contents: message,
+    config: {
+      systemInstruction: `${SYSTEM_INSTRUCTION}
+
+تاريخ التقويم المرجعي: ${selectedDate || new Date().toISOString().slice(0, 10)}.
+لغة الرد المطلوبة: ${language === "en" ? "English" : "العربية"}.
+اكتب الرد وعناوين المهام باللغة المطلوبة، مع الحفاظ على قيم category وpriority بالإنجليزية كما هي في تنسيق JSON.
+إذا كان clarification مطلوباً، اجعله سؤالاً واحداً قصيراً باللغة المطلوبة.`,
+    },
+  });
+
+  return parseModelText(response.text || "", language);
+}
+
+async function parseTasksWithOpenRouter(message, language, selectedDate) {
+  const configuredKey = process.env.OPENROUTER_API_KEY?.trim();
+  const apiKey = configuredKey?.replace(/^(["'])(.*)\1$/, "$2").trim();
+  if (!apiKey) {
+    throw new Error("OPENROUTER_API_KEY is not configured");
+  }
+
+  const model = process.env.OPENROUTER_MODEL?.trim() || "openrouter/free";
+  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      "HTTP-Referer": "https://yomak-ai.vercel.app",
+      "X-Title": "Yomak AI",
+    },
+    body: JSON.stringify({
+      model,
+      temperature: 0.2,
+      messages: [
+        {
+          role: "system",
+          content: `${SYSTEM_INSTRUCTION}
+
+تاريخ التقويم المرجعي: ${selectedDate || new Date().toISOString().slice(0, 10)}.
+لغة الرد المطلوبة: ${language === "en" ? "English" : "العربية"}.
+اكتب الرد وعناوين المهام باللغة المطلوبة، مع الحفاظ على قيم category وpriority بالإنجليزية كما هي في تنسيق JSON.
+إذا كان clarification مطلوباً، اجعله سؤالاً واحداً قصيراً باللغة المطلوبة.
+أعد JSON بنفس البنية المطلوبة فقط بعد الرد القصير، ولا تستخدم markdown أو code fences.`,
+        },
+        { role: "user", content: message },
+      ],
+    }),
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(
+      typeof data.error?.message === "string"
+        ? data.error.message
+        : `OpenRouter request failed with status ${response.status}`,
+    );
+    error.status = response.status;
+    error.error = data.error;
+    throw error;
+  }
+
+  const text = data.choices?.[0]?.message?.content;
+  return parseModelText(typeof text === "string" ? text : "", language);
+}
+
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
@@ -194,88 +315,51 @@ export default async function handler(req, res) {
     normalizedLanguage,
     normalizedSelectedDate,
   );
-  if (localResult) return res.status(200).json(localResult);
-
-  const configuredKey = process.env.GEMINI_API_KEY?.trim();
-  const apiKey = configuredKey?.replace(/^(["'])(.*)\1$/, "$2").trim();
-  if (!apiKey) {
-    return res.status(500).json({ error: "GEMINI_API_KEY is not configured" });
+  if (localResult) {
+    console.info("[parse-tasks] provider=local_parser");
+    return res.status(200).json(localResult);
   }
 
   try {
-    const ai = new GoogleGenAI({
-      apiKey,
-      httpOptions: {
-        headers: {
-          "User-Agent": "yomak-ai",
-        },
-        retryOptions: {
-          attempts: 1,
-        },
-      },
-    });
+    const geminiResult = await parseTasksWithGemini(
+      message.trim(),
+      normalizedLanguage,
+      normalizedSelectedDate,
+    );
+    console.info("[parse-tasks] provider=gemini");
+    return res.status(200).json(geminiResult);
+  } catch (geminiError) {
+    console.error("Gemini API error:", geminiError);
+    const shouldTryOpenRouter = isGeminiQuotaError(geminiError)
+      || isGeminiServiceUnavailableError(geminiError);
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: message.trim(),
-      config: {
-        systemInstruction: `${SYSTEM_INSTRUCTION}
-
-تاريخ التقويم المرجعي: ${typeof selectedDate === "string"
-  ? selectedDate
-  : new Date().toISOString().slice(0, 10)}.
-لغة الرد المطلوبة: ${language === "en" ? "English" : "العربية"}.
-اكتب الرد وعناوين المهام باللغة المطلوبة، مع الحفاظ على قيم category وpriority بالإنجليزية كما هي في تنسيق JSON.
-إذا كان clarification مطلوباً، اجعله سؤالاً واحداً قصيراً باللغة المطلوبة.`,
-      },
-    });
-
-    const text = response.text || "";
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    let tasks = [];
-    let cleanText = text;
-    let clarification = "";
-
-    if (jsonMatch) {
-      try {
-        const jsonData = JSON.parse(jsonMatch[0]);
-        tasks = Array.isArray(jsonData.tasks) ? jsonData.tasks : [];
-        clarification = typeof jsonData.clarification === "string"
-          ? jsonData.clarification.trim()
-          : "";
-        cleanText = text.replace(jsonMatch[0], "").trim();
-      } catch (error) {
-        console.error("Failed to parse JSON from Gemini response:", error);
-      }
+    if (!shouldTryOpenRouter) {
+      console.warn("Gemini failed with a non-retryable error; trying OpenRouter fallback once.");
     }
 
-    const reply = clarification || (tasks.length > 0
-      ? language === "en" ? "Done, I organized it for you." : "أبشر، رتبتها لك."
-      : cleanVisibleReply(cleanText, language));
-
-    return res.status(200).json({
-      reply,
-      tasks: tasks.map(task => ({
-        ...task,
-        id: globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2, 11),
-        completed: false,
-        createdAt: new Date().toISOString(),
-      })),
-    });
-  } catch (error) {
-    console.error("Gemini API error:", error);
-    if (isGeminiQuotaError(error)) {
-      return res.status(429).json({ error: "quota_exceeded" });
-    }
-    if (isGeminiServiceUnavailableError(error)) {
-      const localResult = parseTasksLocally(
+    try {
+      const openRouterResult = await parseTasksWithOpenRouter(
         message.trim(),
         normalizedLanguage,
         normalizedSelectedDate,
       );
-      if (localResult) return res.status(200).json(localResult);
-      return res.status(503).json({ error: "service_unavailable" });
+      console.info("[parse-tasks] provider=openrouter");
+      return res.status(200).json(openRouterResult);
+    } catch (openRouterError) {
+      console.error("OpenRouter API error:", openRouterError);
     }
-    return res.status(500).json({ error: "Failed to process message" });
+
+    const fallbackLocalResult = parseTasksLocally(
+      message.trim(),
+      normalizedLanguage,
+      normalizedSelectedDate,
+    );
+    if (fallbackLocalResult) {
+      console.info("[parse-tasks] provider=local_parser");
+      return res.status(200).json(fallbackLocalResult);
+    }
+
+    console.info("[parse-tasks] provider=failed_all");
+    return res.status(503).json({ error: "service_unavailable" });
   }
 }

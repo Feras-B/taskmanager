@@ -51,6 +51,43 @@ interface ParsedTask {
   time?: string;
 }
 
+function parseModelText(text: string, language: "ar" | "en") {
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  let tasks: ParsedTask[] = [];
+  let cleanText = text;
+  let clarification = "";
+
+  if (jsonMatch) {
+    try {
+      const jsonData = JSON.parse(jsonMatch[0]) as {
+        tasks?: ParsedTask[];
+        clarification?: unknown;
+      };
+      tasks = Array.isArray(jsonData.tasks) ? jsonData.tasks : [];
+      clarification = typeof jsonData.clarification === "string"
+        ? jsonData.clarification.trim()
+        : "";
+      cleanText = text.replace(jsonMatch[0], "").trim();
+    } catch (error) {
+      console.error("Failed to parse JSON from AI response:", error);
+    }
+  }
+
+  const reply = clarification || (tasks.length > 0
+    ? language === "en" ? "Done, I organized it for you." : "أبشر، رتبتها لك."
+    : cleanVisibleReply(cleanText, language));
+
+  return {
+    reply,
+    tasks: tasks.map(task => ({
+      ...task,
+      id: globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2, 11),
+      completed: false,
+      createdAt: new Date().toISOString(),
+    })),
+  };
+}
+
 export function isGeminiQuotaError(error: unknown) {
   if (!error || typeof error !== "object") return false;
   const candidate = error as {
@@ -234,39 +271,64 @@ export async function parseTasksWithGemini(
     },
   });
 
-  const text = response.text || "";
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  let tasks: ParsedTask[] = [];
-  let cleanText = text;
-  let clarification = "";
+  return parseModelText(response.text || "", language);
+}
 
-  if (jsonMatch) {
-    try {
-      const jsonData = JSON.parse(jsonMatch[0]) as {
-        tasks?: ParsedTask[];
-        clarification?: unknown;
-      };
-      tasks = Array.isArray(jsonData.tasks) ? jsonData.tasks : [];
-      clarification = typeof jsonData.clarification === "string"
-        ? jsonData.clarification.trim()
-        : "";
-      cleanText = text.replace(jsonMatch[0], "").trim();
-    } catch (error) {
-      console.error("Failed to parse JSON from Gemini response:", error);
-    }
+export async function parseTasksWithOpenRouter(
+  message: string,
+  language: "ar" | "en",
+  selectedDate?: string,
+) {
+  const configuredKey = process.env.OPENROUTER_API_KEY?.trim();
+  const apiKey = configuredKey?.replace(/^(["'])(.*)\1$/, "$2").trim();
+  if (!apiKey) {
+    throw new Error("OPENROUTER_API_KEY is not configured");
   }
 
-  const reply = clarification || (tasks.length > 0
-    ? language === "en" ? "Done, I organized it for you." : "أبشر، رتبتها لك."
-    : cleanVisibleReply(cleanText, language));
+  const model = process.env.OPENROUTER_MODEL?.trim() || "openrouter/free";
+  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      "HTTP-Referer": "https://yomak-ai.vercel.app",
+      "X-Title": "Yomak AI",
+    },
+    body: JSON.stringify({
+      model,
+      temperature: 0.2,
+      messages: [
+        {
+          role: "system",
+          content: `${SYSTEM_INSTRUCTION}
 
-  return {
-    reply,
-    tasks: tasks.map(task => ({
-      ...task,
-      id: globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2, 11),
-      completed: false,
-      createdAt: new Date().toISOString(),
-    })),
+تاريخ التقويم المرجعي: ${selectedDate || new Date().toISOString().slice(0, 10)}.
+لغة الرد المطلوبة: ${language === "en" ? "English" : "العربية"}.
+اكتب الرد وعناوين المهام باللغة المطلوبة، مع الحفاظ على قيم category وpriority بالإنجليزية كما هي في تنسيق JSON.
+إذا كان clarification مطلوباً، اجعله سؤالاً واحداً قصيراً باللغة المطلوبة.
+أعد JSON بنفس البنية المطلوبة فقط بعد الرد القصير، ولا تستخدم markdown أو code fences.`,
+        },
+        { role: "user", content: message },
+      ],
+    }),
+  });
+
+  const data = await response.json().catch(() => ({})) as {
+    choices?: Array<{ message?: { content?: unknown } }>;
+    error?: { message?: unknown; code?: unknown };
   };
+
+  if (!response.ok) {
+    const error = new Error(
+      typeof data.error?.message === "string"
+        ? data.error.message
+        : `OpenRouter request failed with status ${response.status}`,
+    ) as Error & { status?: number; error?: unknown };
+    error.status = response.status;
+    error.error = data.error;
+    throw error;
+  }
+
+  const text = data.choices?.[0]?.message?.content;
+  return parseModelText(typeof text === "string" ? text : "", language);
 }
