@@ -249,6 +249,11 @@ const translations = {
     remaining: (count: number) => `لديك ${count} مهام متبقية بانتظارك.`,
     activeTasks: 'المهام النشطة',
     completedTasks: 'المهام المنجزة',
+    completeTaskConfirm: 'هل أنجزت هذه المهمة؟',
+    confirmCompleteTask: 'نعم، أنجزتها',
+    completedLabel: 'تم إنجازها',
+    restoreTaskConfirm: 'هل تريد إعادة المهمة؟',
+    confirmRestoreTask: 'إعادة للمهمات',
     highPriority: 'مهم جداً',
     emptyTitle: 'يومك مازال صفحة بيضاء!',
     emptyDescription: 'أي شيء يدور في خاطرك؟ أخبرني في الشات وسأقوم بترتيبه لك.',
@@ -380,6 +385,11 @@ const translations = {
     remaining: (count: number) => `You have ${count} task${count === 1 ? '' : 's'} remaining.`,
     activeTasks: 'Active tasks',
     completedTasks: 'Completed tasks',
+    completeTaskConfirm: 'Did you finish this task?',
+    confirmCompleteTask: 'Yes, completed',
+    completedLabel: 'Completed',
+    restoreTaskConfirm: 'Do you want to restore this task?',
+    confirmRestoreTask: 'Restore to tasks',
     highPriority: 'High priority',
     emptyTitle: 'Your day is a blank page!',
     emptyDescription: "What's on your mind? Tell me in the chat and I'll organize it for you.",
@@ -628,6 +638,10 @@ export default function App() {
   const [activeSection, setActiveSection] = useState<AppSection>('dashboard');
   const [mobileView, setMobileView] = useState<MobileView>('chat');
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
+  const [taskCompletionPrompt, setTaskCompletionPrompt] = useState<{
+    taskId: string;
+    action: 'complete' | 'restore';
+  } | null>(null);
   const [calendarView, setCalendarView] = useState<CalendarViewMode>('week');
   const [selectedDate, setSelectedDate] = useState(todayKey);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -1324,6 +1338,7 @@ export default function App() {
     setTasks(prev => prev.map(task => 
       task.id === id ? { ...task, completed: !task.completed } : task
     ));
+    setTaskCompletionPrompt(null);
   };
 
   const deleteTask = (id: string) => {
@@ -1333,6 +1348,7 @@ export default function App() {
     setTasks(prev => prev.filter(item => item.id !== id));
     setTrashedTasks(prev => [trashedTask, ...prev]);
     setUndoTask(trashedTask);
+    setTaskCompletionPrompt(current => current?.taskId === id ? null : current);
   };
 
   const restoreTask = (id: string) => {
@@ -2204,12 +2220,19 @@ export default function App() {
                     exit={{ opacity: 0, scale: 0.98 }}
                     className="group flex items-start gap-3 rounded-lg border border-zinc-100 bg-white p-3.5 shadow-sm transition-all hover:border-zinc-200 hover:shadow-xl dark:border-zinc-800 dark:bg-zinc-900 dark:shadow-black/20 dark:hover:border-zinc-700 sm:gap-5 sm:rounded-3xl sm:p-5"
                   >
-                    <button 
-                      onClick={() => toggleTask(task.id)}
-                      className="flex h-11 w-11 shrink-0 items-center justify-center text-zinc-200 transition-colors hover:text-primary active:scale-95 dark:text-zinc-700 dark:hover:text-primary"
-                    >
-                      <Circle size={28} />
-                    </button>
+                    <div className="flex shrink-0 flex-col items-center gap-2">
+                      <button
+                        onClick={() => setTaskCompletionPrompt({ taskId: task.id, action: 'complete' })}
+                        className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl transition-colors active:scale-95 ${
+                          taskCompletionPrompt?.taskId === task.id && taskCompletionPrompt.action === 'complete'
+                            ? 'bg-primary/10 text-primary'
+                            : 'text-zinc-200 hover:text-primary dark:text-zinc-700 dark:hover:text-primary'
+                        }`}
+                        aria-label={t.completeTaskConfirm}
+                      >
+                        <Circle size={28} />
+                      </button>
+                    </div>
                     <div className="min-w-0 flex-1">
                       <h3 className="break-words text-base font-semibold leading-snug text-zinc-800 [overflow-wrap:anywhere] dark:text-zinc-100 sm:text-lg">{task.title}</h3>
                       <div className="mt-2 flex flex-wrap items-center gap-2 sm:gap-4">
@@ -2265,6 +2288,27 @@ export default function App() {
                           {t.taskReminderNeedsTime}
                         </p>
                       )}
+                      {taskCompletionPrompt?.taskId === task.id && taskCompletionPrompt.action === 'complete' && (
+                        <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3 dark:border-emerald-500/20 dark:bg-emerald-500/10">
+                          <p className="text-xs font-bold text-emerald-800 dark:text-emerald-200">
+                            {t.completeTaskConfirm}
+                          </p>
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            <button
+                              onClick={() => toggleTask(task.id)}
+                              className="min-h-10 rounded-md bg-emerald-600 px-3 text-xs font-bold text-white transition-colors hover:bg-emerald-700"
+                            >
+                              {t.confirmCompleteTask}
+                            </button>
+                            <button
+                              onClick={() => setTaskCompletionPrompt(null)}
+                              className="min-h-10 rounded-md border border-emerald-200 bg-white px-3 text-xs font-bold text-emerald-700 transition-colors hover:bg-emerald-100 dark:border-emerald-500/20 dark:bg-zinc-900 dark:text-emerald-200"
+                            >
+                              {t.cancel}
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                     <div className="flex shrink-0 flex-col items-center gap-1 opacity-100 transition-opacity sm:flex-row sm:opacity-0 sm:group-hover:opacity-100">
                       <button
@@ -2295,16 +2339,57 @@ export default function App() {
                 {completedList.map((task) => (
                   <div
                     key={task.id}
-                    className="flex items-center gap-3 rounded-lg border border-transparent bg-white/40 p-3.5 opacity-50 grayscale transition-all hover:grayscale-0 dark:bg-zinc-900/40 sm:gap-5 sm:rounded-3xl sm:p-5"
+                    className="flex items-start gap-3 rounded-lg border border-emerald-100 bg-emerald-50/60 p-3.5 transition-all dark:border-emerald-500/20 dark:bg-emerald-500/10 sm:gap-5 sm:rounded-3xl sm:p-5"
                   >
                     <button 
-                      onClick={() => toggleTask(task.id)}
-                      className="text-emerald-500"
+                      onClick={() => setTaskCompletionPrompt({ taskId: task.id, action: 'restore' })}
+                      className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl transition-colors active:scale-95 ${
+                        taskCompletionPrompt?.taskId === task.id && taskCompletionPrompt.action === 'restore'
+                          ? 'bg-white text-emerald-700 shadow-sm dark:bg-zinc-900 dark:text-emerald-300'
+                          : 'text-emerald-600 hover:bg-white hover:text-emerald-700 dark:text-emerald-300 dark:hover:bg-zinc-900'
+                      }`}
+                      aria-label={t.restoreTaskConfirm}
                     >
                       <CheckCircle2 size={28} />
                     </button>
-                    <div className="flex-1">
-                      <h3 className="font-medium text-zinc-500 line-through text-lg dark:text-zinc-400">{task.title}</h3>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h3 className="break-words text-base font-semibold leading-snug text-zinc-700 line-through decoration-emerald-500/60 [overflow-wrap:anywhere] dark:text-zinc-100 sm:text-lg">{task.title}</h3>
+                        <span className="rounded-full bg-emerald-600 px-2.5 py-1 text-[11px] font-bold text-white dark:bg-emerald-500 dark:text-emerald-950">
+                          {t.completedLabel}
+                        </span>
+                      </div>
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <span className="flex items-center gap-1.5 rounded-full bg-white px-3 py-1.5 text-xs font-medium text-emerald-700 dark:bg-zinc-900 dark:text-emerald-200">
+                          {t.categories[task.category]}
+                        </span>
+                        {task.time && (
+                          <span className="flex items-center gap-1.5 rounded-md bg-white px-2 py-1 text-xs font-medium text-emerald-700 dark:bg-zinc-900 dark:text-emerald-200">
+                            <Clock size={12} /> {task.time}
+                          </span>
+                        )}
+                      </div>
+                      {taskCompletionPrompt?.taskId === task.id && taskCompletionPrompt.action === 'restore' && (
+                        <div className="mt-3 rounded-lg border border-emerald-200 bg-white p-3 dark:border-emerald-500/20 dark:bg-zinc-900">
+                          <p className="text-xs font-bold text-emerald-800 dark:text-emerald-200">
+                            {t.restoreTaskConfirm}
+                          </p>
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            <button
+                              onClick={() => toggleTask(task.id)}
+                              className="min-h-10 rounded-md bg-emerald-600 px-3 text-xs font-bold text-white transition-colors hover:bg-emerald-700"
+                            >
+                              {t.confirmRestoreTask}
+                            </button>
+                            <button
+                              onClick={() => setTaskCompletionPrompt(null)}
+                              className="min-h-10 rounded-md border border-emerald-200 bg-white px-3 text-xs font-bold text-emerald-700 transition-colors hover:bg-emerald-50 dark:border-emerald-500/20 dark:bg-zinc-950 dark:text-emerald-200"
+                            >
+                              {t.cancel}
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
                 ))}
